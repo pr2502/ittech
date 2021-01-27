@@ -1,0 +1,9 @@
+[package]
+name = "ittech"
+version = "0.1.0"
+description = "Impulse Tracker file parser and writer"
+authors = []
+edition = "2018"
+
+[dependencies]
+nom = "6.0"
