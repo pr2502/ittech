@@ -34,14 +34,71 @@ pub enum Order {
 
 #[derive(Debug)]
 pub struct Instrument {
-    pub header: ll::InstrumentHeader,
+    pub name: ll::Name,
+    pub filename: ll::DOSFilename,
+    pub nna: u8,
+    pub dct: u8,
+    pub dca: u8,
+    pub fadeout: u16,
+    pub pps: i8,
+    pub ppc: u8,
+    pub gbv: u8,
+    pub dfp: u8,
+    pub rv: u8,
+    pub rp: u8,
+    pub trkver: u16,
+    pub nos: u8,
+    pub ifc: u8,
+    pub ifr: u8,
+    pub mch: u8,
+    pub mpr: u8,
+    pub mbank: [u8; 2],
+    pub keyboard: [(u8, u8); 120],
+    pub volenv: ll::Envelope,
+    pub panenv: ll::Envelope,
+    pub pitchenv: ll::Envelope,
 }
 
 #[derive(Debug)]
 pub struct Sample {
-    pub header: ll::SampleHeader,
+    pub name: ll::Name,
+    pub filename: ll::DOSFilename,
+    pub samplerate_c5: u32,
+    pub data: Option<Vec<f32>>,
 }
 
 #[derive(Debug)]
 pub struct Pattern {
+    pub rows: Vec<Vec<Command>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Command {
+    pub channel: u8,
+    pub note: Option<Note>,
+    pub instrument: Option<u8>,
+    pub volume: Option<Volume>,
+    pub command: Option<(u8, u8)>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Note {
+    Tone(u8),
+    Off,
+    Cut,
+    Fade,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Volume {
+    SetVolume(u8),
+    Panning(u8),
+    FineVolumeUp(u8),
+    FineVolumeDown(u8),
+    VolumeSlideUp(u8),
+    VolumeSlideDown(u8),
+    PitchSlideDown(u8),
+    PitchSlideUp(u8),
+    PortamentoTo(u8),
+    Vibrato(u8),
 }

@@ -16,12 +16,12 @@ pub fn byte_array<const N: usize>(input: &[u8]) -> IResult<&[u8], [u8; N]> {
 /// Runs the embedded parser N times and returns the result as an array.
 pub fn array<I, O, E, F, const N: usize>(
     f: F,
-) -> impl FnMut(I) -> IResult<I, [O; N], E>
+) -> impl FnOnce(I) -> IResult<I, [O; N], E>
 where
     I: Clone + PartialEq,
     O: Copy + Default,
     E: ParseError<I>,
-    F: Parser<I, O, E> + Copy,
+    F: Parser<I, O, E>,
 {
     move |input: I| {
         let (rest, vec): (_, Vec<_>) = count(f, N)(input)?;
@@ -58,6 +58,9 @@ where
         let mut output_list = Vec::with_capacity(offset_list.len());
         for &offset in &offset_list {
             let offset = offset as usize;
+            if offset == 0 {
+                todo!()
+            }
             if offset >= input.len() {
                 return Err(nom::Err::Error(nom::error::make_error(input, nom::error::ErrorKind::Eof)));
             }

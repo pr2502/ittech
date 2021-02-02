@@ -111,7 +111,7 @@ pub struct InstrumentHeader {
     /// MIDI Bank
     pub mbank: [u8; 2],
     /// Sample / Transpose map
-    pub keyboard: [u8; 240],
+    pub keyboard: [(u8, u8); 120],
     /// Volume Envelope
     pub volenv: Envelope,
     /// Pan Envelope
@@ -248,16 +248,20 @@ pub struct DOSFilename {
     pub bytes: [u8; 13],
 }
 
-fn debug_bytestring(bytes: &[u8], f: &mut fmt::Formatter) -> fmt::Result {
-    let len = bytes.iter()
+fn null_terminated(bytes: &[u8]) -> &[u8] {
+    let null_pos = bytes.iter()
         .position(|&b| b == 0)
         .unwrap_or(bytes.len());
+    &bytes[..null_pos]
+}
+
+fn debug_bytestring(bytes: &[u8], f: &mut fmt::Formatter) -> fmt::Result {
     f.write_char('"')?;
-    for &byte in &bytes[..len] {
-        if byte.is_ascii_graphic() {
+    for &byte in null_terminated(bytes) {
+        if byte.is_ascii_graphic() || byte == b' ' {
             f.write_char(byte as char)?;
         } else {
-            write!(f, "\\x{:02X}", byte)?;
+            write!(f, "<0x{:02X}>", byte)?;
         }
     }
     f.write_char('"')
@@ -272,5 +276,17 @@ impl fmt::Debug for Name {
 impl fmt::Debug for DOSFilename {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         debug_bytestring(&self.bytes, f)
+    }
+}
+
+impl fmt::Display for Name {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        String::from_utf8_lossy(null_terminated(&self.bytes)).fmt(f)
+    }
+}
+
+impl fmt::Display for DOSFilename {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        String::from_utf8_lossy(null_terminated(&self.bytes)).fmt(f)
     }
 }
