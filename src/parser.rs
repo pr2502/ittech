@@ -1,14 +1,19 @@
-use crate::hl::{Instrument, Order, Pattern, Sample, IT};
+use crate::hl::{Command, Instrument, Note, Order, Pattern, Sample, Volume, IT};
 use crate::ll::{DOSFilename, Envelope, ITFileHeader, InstrumentHeader, Name, Node, SampleHeader};
 use nom::bytes::complete::{tag, take};
+use nom::combinator::{all_consuming, map};
 use nom::error::Error;
-use nom::multi::count;
-use nom::number::complete::{le_i8, le_u16, le_u32, le_u8};
+use nom::multi::{count, many_till};
+use nom::number::complete::{be_i16, le_i16, le_i8, le_u16, le_u32, le_u8};
+use nom::sequence::tuple;
 use nom::IResult;
 use util::{array, byte_array, offset_list, ranged};
 
 mod util;
 
+fn is_set_bit(val: u8, bit: u8) -> bool {
+    val & bit == bit
+}
 
 pub fn it(whole_input: &[u8]) -> Result<IT, nom::Err<Error<&[u8]>>> {
     let (input, header) = it_file_header(whole_input)?;
@@ -19,8 +24,60 @@ pub fn it(whole_input: &[u8]) -> Result<IT, nom::Err<Error<&[u8]>>> {
 
     // Offsets are relative to the start of the file, use the whole input each time.
     let (_, instruments) = offset_list(instrument, ins_offsets)(whole_input)?;
-    let (_, samples) = offset_list(sample, sam_offsets)(whole_input)?;
-    let (_, patterns) = offset_list(pattern, pat_offsets)(whole_input)?;
+    let (_, sample_headers) = offset_list(sample_header, sam_offsets)(whole_input)?;
+    let patterns = {
+        let mut patterns = Vec::with_capacity(pat_offsets.len());
+        for offset in pat_offsets.into_iter().map(|o| o as usize) {
+            if offset == 0 {
+                patterns.push(Pattern {
+                    rows: vec![Vec::new(); 64]
+                });
+                continue
+            }
+            if offset >= input.len() {
+                return Err(nom::Err::Error(nom::error::make_error(input, nom::error::ErrorKind::Eof)));
+            }
+            let (_, pat) = pattern(&whole_input[offset..])?;
+            patterns.push(pat);
+        }
+        patterns
+    };
+
+    let samples = sample_headers.into_iter()
+        .map(|header| {
+            assert!(!is_set_bit(header.flags, SampleHeader::flags_sampleStereo), "only mono samples supported");
+            assert!(!is_set_bit(header.flags, SampleHeader::flags_sampleCompressed), "sample compression not supported");
+
+            assert!(is_set_bit(header.cvt, SampleHeader::cvtSignedSample), "only signed samples are supported");
+            assert!(!is_set_bit(header.cvt, SampleHeader::cvtDelta), "delta samples not supported");
+            assert!(!is_set_bit(header.cvt, SampleHeader::cvtPTM8to16), "PTM loader is not supported");
+
+            let data = if !is_set_bit(header.flags, SampleHeader::flags_sampleDataPresent) {
+                None
+            } else {
+                let offset = header.samplepointer as usize;
+                let length = header.length as usize;
+                let input = &whole_input[offset..];
+                let (_, data) = if is_set_bit(header.flags, SampleHeader::flags_sample16Bit) {
+                    if is_set_bit(header.cvt, SampleHeader::cvtBigEndian) {
+                        count(map(be_i16, |s| f32::from(s) / f32::from(i16::MAX)), length)(input)?
+                    } else {
+                        count(map(le_i16, |s| f32::from(s) / f32::from(i16::MAX)), length)(input)?
+                    }
+                } else {
+                    count(map(le_i8, |s| f32::from(s) / f32::from(i8::MAX)), length)(input)?
+                };
+                Some(data)
+            };
+
+            Ok(Sample {
+                name: header.name,
+                filename: header.filename,
+                samplerate_c5: header.C5Speed,
+                data,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     let message = {
         let offset = header.msgoffset as usize;
@@ -58,17 +115,18 @@ pub fn it(whole_input: &[u8]) -> Result<IT, nom::Err<Error<&[u8]>>> {
 
 fn order(input: &[u8]) -> IResult<&[u8], Order> {
     let (input, byte) = le_u8(input)?;
-    Ok((
-        input,
-        match byte {
-            0..=199 => Order::Index(byte),
-            // ITTECH.TXT says only 0..=199 are allowed but these are not used for anything else so
-            // we're going to parse them too.
-            200..=253 => Order::Index(byte),
-            254 => Order::Separator,
-            255 => Order::EndOfSong,
+    let order = match byte {
+        0..=199 => Order::Index(byte),
+        200..=253 => {
+            // TODO ITTECH.TXT says only 0..=199 are allowed, but 200..=253 are not used for
+            // anything else so we might parse them too
+            // Order::Index(byte),
+            return Err(nom::Err::Error(nom::error::make_error(input, nom::error::ErrorKind::Verify)));
         },
-    ))
+        254 => Order::Separator,
+        255 => Order::EndOfSong,
+    };
+    Ok((input, order))
 }
 
 fn instrument(input: &[u8]) -> IResult<&[u8], Instrument> {
@@ -90,7 +148,6 @@ fn instrument(input: &[u8]) -> IResult<&[u8], Instrument> {
             rp: header.rp,
             trkver: header.trkver,
             nos: header.nos,
-            reserved1: header.reserved1,
             ifc: header.ifc,
             ifr: header.ifr,
             mch: header.mch,
@@ -104,21 +161,120 @@ fn instrument(input: &[u8]) -> IResult<&[u8], Instrument> {
     ))
 }
 
-fn sample(input: &[u8]) -> IResult<&[u8], Sample> {
-    let (input, header) = sample_header(input)?;
-    Ok((
-        input,
-        Sample {
-            name: header.name,
-            filename: header.filename,
-        },
-    ))
-}
-
 fn pattern(input: &[u8]) -> IResult<&[u8], Pattern> {
-    Ok((input, Pattern {}))
-}
+    let (input, length) = le_u16(input)?;
+    let (input, rows) = le_u16(input)?;
+    let (input, _) = take(4usize)(input)?; // padding bytes
+    let (_, input) = take(length)(input)?; // pattern size
 
+
+    let mut last_maskvar = [0u8; 64];
+    let mut last_note = [Note::Off; 64];
+    let mut last_instrument = [0u8; 64];
+    let mut last_volume = [Volume::SetVolume(0); 64];
+    let mut last_command = [(0u8, 0u8); 64];
+
+    // masks
+    const LAST_MASKVAR: u8 = 128;
+    const READ_NOTE: u8 = 1;
+    const READ_INSTRUMENT: u8 = 2;
+    const READ_VOLUME: u8 = 4;
+    const READ_COMMAND: u8 = 8;
+    const LAST_NOTE: u8 = 16;
+    const LAST_INSTRUMENT: u8 = 32;
+    const LAST_VOLUME: u8 = 64;
+    const LAST_COMMAND: u8 = 128;
+
+    let (input, rows) = all_consuming(count(
+        map(
+            many_till(
+                |input| {
+                    let (input, channel_var) = le_u8(input)?;
+
+                    let channel = ((channel_var - 1) & 63) as usize;
+
+                    let (input, mask_var) = if is_set_bit(channel_var, LAST_MASKVAR) {
+                        let (input, mask_var) = le_u8(input)?;
+                        last_maskvar[channel] = mask_var;
+                        (input, mask_var)
+                    } else {
+                        (input, last_maskvar[channel])
+                    };
+
+                    let (input, note) = if is_set_bit(mask_var, READ_NOTE) && !is_set_bit(mask_var, LAST_NOTE) {
+                        let (input, note_var) = le_u8(input)?;
+                        let note = match note_var {
+                            0..=119 => Note::Tone(note_var),
+                            255 => Note::Off,
+                            254 => Note::Cut,
+                            _ => Note::Fade,
+                        };
+                        last_note[channel] = note;
+                        (input, Some(note))
+                    } else if is_set_bit(mask_var, LAST_NOTE) {
+                        (input, Some(last_note[channel]))
+                    } else {
+                        (input, None)
+                    };
+
+                    let (input, instrument) = if is_set_bit(mask_var, READ_INSTRUMENT) && !is_set_bit(mask_var, LAST_INSTRUMENT) {
+                        let (input, instrument) = ranged(le_u8, 0..=99)(input)?;
+                        last_instrument[channel] = instrument;
+                        (input, Some(instrument))
+                    } else if is_set_bit(mask_var, LAST_INSTRUMENT) {
+                        (input, Some(last_instrument[channel]))
+                    } else {
+                        (input, None)
+                    };
+
+                    let (input, volume) = if is_set_bit(mask_var, READ_VOLUME) && !is_set_bit(mask_var, LAST_VOLUME) {
+                        let (input, byte) = le_u8(input)?;
+                        let volume = match byte {
+                            0..=64 => Volume::SetVolume(byte),
+                            128..=192 => Volume::Panning(byte - 128),
+                            65..=74 => Volume::FineVolumeUp(byte - 65),
+                            75..=84 => Volume::FineVolumeDown(byte - 75),
+                            85..=94 => Volume::VolumeSlideUp(byte - 85),
+                            95..=104 => Volume::VolumeSlideDown(byte - 95),
+                            105..=114 => Volume::PitchSlideDown(byte - 105),
+                            115..=124 => Volume::PitchSlideUp(byte - 115),
+                            193..=202 => Volume::PortamentoTo(byte - 193),
+                            203..=212 => Volume::Vibrato(byte - 203),
+                            _ => return Err(nom::Err::Error(nom::error::make_error(input, nom::error::ErrorKind::Verify))),
+                        };
+                        last_volume[channel] = volume;
+                        (input, Some(volume))
+                    } else if is_set_bit(mask_var, LAST_VOLUME) {
+                        (input, Some(last_volume[channel]))
+                    } else {
+                        (input, None)
+                    };
+
+                    let (input, command) = if is_set_bit(mask_var, READ_COMMAND) && !is_set_bit(mask_var, LAST_COMMAND) {
+                        // TODO parse more
+                        let (input, command) = tuple((ranged(le_u8, 0..=31), le_u8))(input)?;
+                        last_command[channel] = command;
+                        (input, Some(command))
+                    } else if is_set_bit(mask_var, LAST_COMMAND) {
+                        (input, Some(last_command[channel]))
+                    } else {
+                        (input, None)
+                    };
+
+                    let channel = channel as u8;
+                    Ok((input, Command { channel, note, instrument, volume, command }))
+                },
+                tag(b"\0"),
+            ),
+            |(mut commands, _)| {
+                commands.sort_unstable_by_key(|cmd| cmd.channel);
+                commands
+            },
+        ),
+        rows as usize,
+    ))(input)?;
+    Ok((input, Pattern { rows }))
+}
 
 
 
@@ -200,7 +356,7 @@ pub fn instrument_header(input: &[u8]) -> IResult<&[u8], InstrumentHeader> {
         mch       = le_u8,
         mpr       = le_u8,
         mbank     = byte_array,
-        keyboard  = byte_array,
+        keyboard  = array(tuple((le_u8, le_u8))),
         volenv    = envelope,
         panenv    = envelope,
         pitchenv  = envelope,
