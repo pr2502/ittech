@@ -64,6 +64,7 @@ pub struct Sample {
     pub name: ll::Name,
     pub filename: ll::DOSFilename,
     pub samplerate_c5: u32,
+    pub do_loop: bool,
     pub data: Option<Vec<f32>>,
 }
 
@@ -81,7 +82,7 @@ pub struct Command {
     pub command: Option<(u8, u8)>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Note {
     Tone(u8),
     Off,
