@@ -73,6 +73,7 @@ pub fn it(whole_input: &[u8]) -> Result<IT, nom::Err<Error<&[u8]>>> {
             Ok(Sample {
                 name: header.name,
                 filename: header.filename,
+                do_loop: is_set_bit(header.flags, SampleHeader::flags_sampleLoop),
                 samplerate_c5: header.C5Speed,
                 data,
             })
