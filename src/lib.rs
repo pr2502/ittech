@@ -1,11 +1,24 @@
-//! # Impulse Tracker file parser and writer
+#![feature(external_doc)]
+
+//! # Impulse Tracker module file parser and writer
 //!
-//! ## Resources
-//! - <https://github.com/schismtracker/schismtracker/wiki/ITTECH.TXT> (or in this repository)
+//! ## Additional resources
 //! - <https://github.com/OpenMPT/openmpt/blob/master/soundlib/ITTools.h>
 //! - <https://github.com/OpenMPT/openmpt/blob/master/soundlib/ITTools.cpp>
 //! - <https://github.com/OpenMPT/openmpt/blob/master/soundlib/Load_it.cpp>
 
-pub mod hl;
-pub mod ll;
+
+/// ITTECH.TXT (documentation only)
+///
+/// This is a file documenting Impulse Tracker taken from
+/// <https://github.com/schismtracker/schismtracker/wiki/ITTECH.TXT>
+///
+#[doc(include = "../ITTECH.txt")]
+pub mod ittech_txt {}
+
+
+mod data;
+pub use data::*;
+
 pub mod parser;
+pub mod writer;

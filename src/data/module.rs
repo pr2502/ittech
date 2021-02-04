@@ -1,44 +1,69 @@
-use crate::ll;
 use bitflags::bitflags;
+use super::{Name, InstrumentHeader, Sample, Pattern, RangedU8};
+
 
 #[derive(Debug)]
 pub struct Module {
     /// Song Name, null-terminated (but may also contain nulls)
-    pub name: ll::Name,
-    /// Rows per Measure highlight, Rows per Beat highlight
-    pub highlight: (u8, u8),
-    /// "Made With" Tracker
-    pub made_with_version: u16,
-    /// "Compatible With" Tracker
-    pub compatible_with_version: u16,
-    /// combined Header Flags and Special Flags, for embedding extra information
-    pub flags: ModuleFlags,
-    /// Global Volume (0...128)
-    pub global_volume: u8,
-    /// Sample Volume (0...128)
-    pub sample_volume: u8,
-    /// Initial Speed (1...255)
-    pub speed: u8,
-    /// Initial Tempo (31...255)
-    pub tempo: u8,
-    /// Pan Separation (0...128)
-    pub pan_separation: u8,
-    /// Pitch Wheel Depth
-    pub pitch_wheel_depth: u8,
+    pub name: Name,
+
     /// Comment message
     pub message: String,
-    /// Orders
-    pub orders: Vec<Order>,
+
+    /// Rows per Measure highlight, Rows per Beat highlight
+    pub highlight: (u8, u8),
+
+    /// "Made With" Tracker
+    pub made_with_version: u16,
+
+    /// "Compatible With" Tracker
+    pub compatible_with_version: u16,
+
+    /// combined Header Flags and Special Flags, for embedding extra information
+    pub flags: ModuleFlags,
+
+    /// Global Volume (0...128)
+    pub global_volume: RangedU8<0, 128>,
+
+    /// Sample Volume (0...128)
+    pub sample_volume: RangedU8<0, 128>,
+
+    /// Initial Speed (1...255)
+    pub speed: RangedU8<1, 255>,
+
+    /// Initial Tempo (31...255)
+    pub tempo: RangedU8<31, 255>,
+
+    /// Pan Separation (0...128)
+    pub pan_separation: RangedU8<0, 128>,
+
+    /// Pitch Wheel Depth
+    pub pitch_wheel_depth: u8,
+
     /// Initial Channel Panning
     pub init_channel_panning: [u8; 64],
+
     /// Initial Channel Volume
     pub init_channel_volume: [u8; 64],
+
+    /// Orders
+    pub orders: Vec<Order>,
+
     /// Instrument headers (without samples)
-    pub instruments: Vec<ll::InstrumentHeader>,
+    pub instruments: Vec<InstrumentHeader>,
+
     /// Samples
     pub samples: Vec<Sample>,
+
     /// Patterns
     pub patterns: Vec<Pattern>,
+}
+
+#[derive(Debug)]
+pub enum Order {
+    Index(u8),
+    Separator,
+    EndOfSong,
 }
 
 bitflags! {
@@ -100,67 +125,8 @@ bitflags! {
 }
 
 impl ModuleFlags {
-    pub fn from_parts(flags: u16, special: u16) -> ModuleFlags {
+    pub(crate) fn from_parts(flags: u16, special: u16) -> ModuleFlags {
         let bits = (flags as u32) | ((special as u32) << 16);
         ModuleFlags::from_bits_truncate(bits)
     }
-}
-
-#[derive(Debug)]
-pub struct Instrument {
-    header: ll::InstrumentHeader,
-    samples: Vec<Sample>,
-}
-
-
-#[derive(Debug)]
-pub enum Order {
-    Index(u8),
-    Separator,
-    EndOfSong,
-}
-
-#[derive(Debug)]
-pub struct Sample {
-    pub name: ll::Name,
-    pub filename: ll::DOSFilename,
-    pub samplerate_c5: u32,
-    pub do_loop: bool,
-    pub data: Option<Vec<f32>>,
-}
-
-#[derive(Debug)]
-pub struct Pattern {
-    pub rows: Vec<Vec<Command>>,
-}
-
-#[derive(Clone, Debug)]
-pub struct Command {
-    pub channel: u8,
-    pub note: Option<Note>,
-    pub instrument: Option<u8>,
-    pub volume: Option<Volume>,
-    pub command: Option<(u8, u8)>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Note {
-    Tone(u8),
-    Off,
-    Cut,
-    Fade,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum Volume {
-    SetVolume(u8),
-    Panning(u8),
-    FineVolumeUp(u8),
-    FineVolumeDown(u8),
-    VolumeSlideUp(u8),
-    VolumeSlideDown(u8),
-    PitchSlideDown(u8),
-    PitchSlideUp(u8),
-    PortamentoTo(u8),
-    Vibrato(u8),
 }
