@@ -1,8 +1,10 @@
+#![feature(or_patterns)]
+
 use anyhow::{Context, Result};
 use hound::{SampleFormat, WavSpec, WavWriter};
-use ittech::hl::{Command, Note, Order, IT, Sample};
+use ittech::hl::{Command, Note, Order, Sample, Module};
 use ittech::parser;
-use std::{env, fs};
+use std::{env, fs, iter};
 
 const USAGE: &str = "usage: cargo run --example render -- <itmodule> <outputwav>";
 
@@ -14,10 +16,10 @@ fn main() -> Result<()> {
         .with_context(|| format!("failed to read file {}", &inpname))?;
     // leaking because we need `data` to be able to leave main on error,
     //   this is just an example, don't do this in real programs
-    let it = parser::it(Box::leak(data.into_boxed_slice()))
+    let module = parser::module(Box::leak(data.into_boxed_slice()))
         .context("failed to parse data")?;
 
-    let buffer = render(it).context("failed to render file")?;
+    let buffer = render(module).context("failed to render file")?;
 
     let spec = WavSpec {
         channels: 1,
@@ -46,31 +48,34 @@ fn note_freq(note: u8) -> f32 {
     440.0f32 * 2.0f32.powf(exp)
 }
 
-fn resample(sample: &Sample, note: u8) -> impl Iterator<Item=f32> + '_ {
-    let ratio = note_freq(note) / note_freq(C5);
-    let incr = ratio;
+fn resample(sample: &Sample, note: u8) -> Box<dyn Iterator<Item=f32> + '_> {
+    let note_ratio = note_freq(note) / note_freq(C5);
+    let sr_ratio = (SR as f32) / (sample.samplerate_c5 as f32);
+    let incr = note_ratio / sr_ratio;
     let table = sample.data.as_ref().unwrap();
     let mut offset = 0.0f32;
 
-    std::iter::from_fn(move || {
-        if offset.trunc() as usize + 1 >= table.len() {
-            if sample.do_loop {
-                offset -= table.len() as f32;
-            } else {
-                return None
+    Box::new(
+        iter::from_fn(move || {
+            if offset.trunc() as usize + 1 >= table.len() {
+                if sample.do_loop {
+                    offset -= table.len() as f32;
+                } else {
+                    return None
+                }
             }
-        }
-        let idx = offset.trunc() as usize;
-        let frac = offset.fract();
-        let lerp = table[idx] * (1.0 - frac) + table[idx+1] * frac;
-        offset += incr;
-        Some(lerp)
-    })
-    .fuse()
+            let idx = offset.trunc() as usize;
+            let frac = offset.fract();
+            let lerp = table[idx] * (1.0 - frac) + table[idx+1] * frac;
+            offset += incr;
+            Some(lerp)
+        })
+        .fuse()
+    )
 }
 
-fn render(it: IT) -> Result<Vec<f32>> {
-    let active_channels = it.patterns
+fn render(module: Module) -> Result<Vec<f32>> {
+    let active_channels = module.patterns
         .iter()
         .flat_map(|pat| {
             pat.rows.iter()
@@ -81,38 +86,52 @@ fn render(it: IT) -> Result<Vec<f32>> {
         .context("file is silent (no active channels)")? + 1;
     let amp = 1.0 / (active_channels as f32);
 
-    let total_rows = it.orders
+    let total_rows = module.orders
         .iter()
         .map(|ord| match *ord {
-            Order::Index(idx) => it.patterns[idx as usize].rows.len(),
+            Order::Index(idx) => module.patterns[idx as usize].rows.len(),
             _ => 0,
         })
         .sum::<usize>();
 
-    let samples_per_row = SR * 60 / 4 / (it.tempo as usize);
+    let samples_per_row = SR * 60 / 4 / (module.tempo as usize);
 
     let mut buffer = vec![0.0f32; total_rows * samples_per_row];
+    let mut channels = iter::from_fn(|| Some(None))
+        .take(active_channels)
+        .collect::<Vec<_>>();
 
-    it.orders
+    module.orders
         .iter()
         .flat_map(|ord| match *ord {
-            Order::Index(idx) => it.patterns[idx as usize].rows.iter(),
+            Order::Index(idx) => module.patterns[idx as usize].rows.iter(),
             _ => EMPTY.iter(),
         })
         .zip((0..).step_by(samples_per_row))
         .for_each(|(row, offset)| {
             let buffer = &mut buffer[offset..][..samples_per_row];
-            for Command { note, instrument, .. } in row {
-                if let (Some(Note::Tone(note)), Some(instrument)) = (note, instrument) {
-                    if let Some(instrument) = &it.instruments.get((*instrument as usize).wrapping_sub(1)) {
-                        if let Some((_, sample)) = instrument.keyboard.iter().find(|(n, _)| n == note) {
-                            if let Some(sample) = &it.samples.get((*sample as usize).wrapping_sub(1)) {
-                                buffer.iter_mut()
-                                    .zip(resample(&sample, *note))
-                                    .for_each(|(o, i)| *o = i * amp);
+            for Command { channel, note, instrument, .. } in row {
+                match (note, instrument) {
+                    (Some(Note::Tone(note)), Some(instrument)) => {
+                        if let Some(instrument) = &module.instruments.get((*instrument as usize).wrapping_sub(1)) {
+                            if let Some((_, sample)) = instrument.keyboard.iter().find(|(n, _)| n == note) {
+                                if let Some(sample) = &module.samples.get((*sample as usize).wrapping_sub(1)) {
+                                    channels[*channel as usize] = Some(Box::new(resample(sample, *note)));
+                                }
                             }
                         }
                     }
+                    (Some(Note::Cut | Note::Fade), _) => {
+                        channels[*channel as usize] = None;
+                    }
+                    _ => {}
+                }
+            }
+            for channel in 0..active_channels {
+                if let Some(generator) = &mut channels[channel] {
+                    buffer.iter_mut()
+                        .zip(generator)
+                        .for_each(|(o, i)| *o += i * amp);
                 }
             }
         });
