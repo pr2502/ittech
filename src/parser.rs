@@ -1,5 +1,4 @@
-use crate::hl::{Command, Instrument, Module, ModuleFlags, Note, Order, Pattern, Sample, Volume};
-use crate::ll::{DOSFilename, Envelope, InstrumentHeader, Name, Node, SampleFlags, SampleHeader};
+use crate::data::*;
 use bitflags::bitflags;
 use nom::bytes::complete::{tag, take};
 use nom::combinator::{all_consuming, map};
@@ -8,7 +7,8 @@ use nom::multi::{count, many_till};
 use nom::number::complete::{be_i16, le_i16, le_i8, le_u16, le_u32, le_u8};
 use nom::sequence::tuple;
 use nom::IResult;
-use util::{array, byte_array, offset_list, ranged};
+use std::convert::TryInto;
+use util::*;
 
 mod util;
 
@@ -58,6 +58,7 @@ pub fn module(input: &[u8]) -> Result<Module, nom::Err<Error<&[u8]>>> {
             // case of offset 0 here.
             if offset == 0 {
                 patterns.push(Pattern {
+                    active_channels: ActiveChannels::NONE,
                     rows: vec![Vec::new(); 64]
                 });
                 continue
@@ -73,34 +74,7 @@ pub fn module(input: &[u8]) -> Result<Module, nom::Err<Error<&[u8]>>> {
 
     let samples = sample_headers.into_iter()
         .map(|header| {
-            assert!(header.flags.contains(SampleFlags::DATA_SIGNED), "only signed samples are supported");
-            assert!(!header.flags.contains(SampleFlags::STEREO), "only mono samples supported");
-
-            assert!(!header.flags.contains(SampleFlags::COMPRESSED), "sample compression is not supported");
-            assert!(!header.flags.contains(SampleFlags::OPL_INSTRUMENT), "OPL instrument is not supported");
-            assert!(!header.flags.contains(SampleFlags::EXTERNAL_SAMPLE), "external samples are not supported");
-            assert!(!header.flags.contains(SampleFlags::ADPCM_SAMPLE), "MODPlugin :(");
-            assert!(!header.flags.contains(SampleFlags::DELTA), "delta samples are not supported");
-            assert!(!header.flags.contains(SampleFlags::PTM8_TO_16), "PTM loader is not supported");
-
-            let data = if !header.flags.contains(SampleFlags::DATA_PRESENT) {
-                None
-            } else {
-                let offset = header.samplepointer as usize;
-                let length = header.length as usize;
-                let input = &whole_input[offset..];
-                let (_, data) = if header.flags.contains(SampleFlags::DATA_16BIT) {
-                    if header.flags.contains(SampleFlags::DATA_BIG_ENDIAN) {
-                        count(map(be_i16, |s| f32::from(s) / f32::from(i16::MAX)), length)(input)?
-                    } else {
-                        count(map(le_i16, |s| f32::from(s) / f32::from(i16::MAX)), length)(input)?
-                    }
-                } else {
-                    count(map(le_i8, |s| f32::from(s) / f32::from(i8::MAX)), length)(input)?
-                };
-                Some(data)
-            };
-
+            let data = sample_data(&header, whole_input)?;
             Ok(Sample {
                 name: header.name,
                 filename: header.filename,
@@ -130,11 +104,11 @@ pub fn module(input: &[u8]) -> Result<Module, nom::Err<Error<&[u8]>>> {
         made_with_version: cwtv,
         compatible_with_version: cmwt,
         flags,
-        global_volume: globalvol,
-        sample_volume: mv,
-        speed,
-        tempo,
-        pan_separation: sep,
+        global_volume: globalvol.try_into().unwrap(),
+        sample_volume: mv.try_into().unwrap(),
+        speed: speed.try_into().unwrap(),
+        tempo: tempo.try_into().unwrap(),
+        pan_separation: sep.try_into().unwrap(),
         pitch_wheel_depth: pwd,
         message,
         orders,
@@ -147,10 +121,55 @@ pub fn module(input: &[u8]) -> Result<Module, nom::Err<Error<&[u8]>>> {
 }
 
 /// Parse Impulse Tracker instrument file (.iti)
-pub fn instrument(whole_input: &[u8]) -> Result<Instrument, nom::Err<Error<&[u8]>>> {
+pub fn instrument(input: &[u8]) -> Result<Instrument, nom::Err<Error<&[u8]>>> {
+    // Save the whole input for offset parsing.
+    let whole_input = input;
+
     let (input, header) = instrument_header(whole_input)?;
-    let (_, _sample_headers) = count(sample_header, header.nos as usize)(input)?;
+    let (_, _sample_headers) = count(sample_header, header.number_of_samples as usize)(input)?;
     todo!()
+}
+
+/// Parse Impulse Tracker sample file (.its)
+pub fn sample(input: &[u8]) -> Result<Sample, nom::Err<Error<&[u8]>>> {
+    // Save the whole input for offset parsing.
+    let whole_input = input;
+
+    let (_, _header) = sample_header(whole_input)?;
+    todo!()
+}
+
+fn sample_data<'i>(header: &SampleHeader, whole_input: &'i [u8]) -> Result<Option<Vec<f32>>, nom::Err<Error<&'i [u8]>>> {
+    let flags = header.flags;
+
+    assert!(flags.contains(SampleFlags::DATA_SIGNED), "only signed samples are supported");
+    assert!(!flags.contains(SampleFlags::STEREO), "only mono samples supported");
+
+    assert!(!flags.contains(SampleFlags::COMPRESSED), "sample compression is not supported");
+    assert!(!flags.contains(SampleFlags::OPL_INSTRUMENT), "OPL instrument is not supported");
+    assert!(!flags.contains(SampleFlags::EXTERNAL_SAMPLE), "external samples are not supported");
+    assert!(!flags.contains(SampleFlags::ADPCM_SAMPLE), "MODPlugin :(");
+    assert!(!flags.contains(SampleFlags::DELTA), "delta samples are not supported");
+    assert!(!flags.contains(SampleFlags::PTM8_TO_16), "PTM loader is not supported");
+
+    if !flags.contains(SampleFlags::DATA_PRESENT) {
+        Ok(None)
+    } else {
+        let offset = header.data_offset as usize;
+        let length = header.data_length as usize;
+        let input = &whole_input[offset..];
+
+        let (_, data) = match (
+            flags.contains(SampleFlags::DATA_16BIT),
+            flags.contains(SampleFlags::DATA_BIG_ENDIAN),
+        ) {
+            (true, true) => count(map(be_i16, |s| f32::from(s) / f32::from(i16::MAX)), length)(input)?,
+            (true, false) => count(map(le_i16, |s| f32::from(s) / f32::from(i16::MAX)), length)(input)?,
+            (false, _) => count(map(le_i8, |s| f32::from(s) / f32::from(i8::MAX)), length)(input)?,
+        };
+
+        Ok(Some(data))
+    }
 }
 
 fn order(input: &[u8]) -> IResult<&[u8], Order> {
@@ -191,16 +210,16 @@ fn pattern(input: &[u8]) -> IResult<&[u8], Pattern> {
     }
 
     bitflags! {
-        struct Channel: u8 {
+        struct ChannelMask: u8 {
             const LAST_MASKVAR = 1 << 7;
         }
     }
 
     struct State {
         last_maskvar: [Mask; 64],
-        last_note: [Note; 64],
+        last_note: [NoteCmd; 64],
         last_instrument: [u8; 64],
-        last_volume: [Volume; 64],
+        last_volume: [VolumeCmd; 64],
         last_command: [(u8, u8); 64],
     }
 
@@ -208,9 +227,9 @@ fn pattern(input: &[u8]) -> IResult<&[u8], Pattern> {
         fn default() -> State {
             State {
                 last_maskvar: [Mask::EMPTY; 64],
-                last_note: [Note::Off; 64],
+                last_note: [NoteCmd::Off; 64],
                 last_instrument: [0u8; 64],
-                last_volume: [Volume::SetVolume(0); 64],
+                last_volume: [VolumeCmd::SetVolume(0); 64],
                 last_command: [(0u8, 0u8); 64],
             }
         }
@@ -220,40 +239,40 @@ fn pattern(input: &[u8]) -> IResult<&[u8], Pattern> {
         move |input| {
             let (input, channel_var) = le_u8(input)?;
 
-            let channel_mask = Channel::from_bits_truncate(channel_var);
-            let channel = ((channel_var - 1) & 0b0011_1111) as usize;
+            let channel_mask = ChannelMask::from_bits_truncate(channel_var);
+            let channel = Channel::from_u8_truncate(channel_var - 1);
 
-            let (input, mask_var) = if channel_mask.contains(Channel::LAST_MASKVAR) {
+            let (input, mask_var) = if channel_mask.contains(ChannelMask::LAST_MASKVAR) {
                 let (input, mask_var) = le_u8(input)?;
                 let mask_var = Mask::from_bits_truncate(mask_var);
-                state.last_maskvar[channel] = mask_var;
+                state.last_maskvar[channel.as_usize()] = mask_var;
                 (input, mask_var)
             } else {
-                (input, state.last_maskvar[channel])
+                (input, state.last_maskvar[channel.as_usize()])
             };
 
             let (input, note) = if mask_var.contains(Mask::READ_NOTE) && !mask_var.contains(Mask::LAST_NOTE) {
                 let (input, note_var) = le_u8(input)?;
                 let note = match note_var {
-                    0..=119 => Note::Tone(note_var),
-                    255 => Note::Off,
-                    254 => Note::Cut,
-                    _ => Note::Fade,
+                    0..=119 => NoteCmd::Tone(note_var.try_into().unwrap()),
+                    255 => NoteCmd::Off,
+                    254 => NoteCmd::Cut,
+                    _ => NoteCmd::Fade,
                 };
-                state.last_note[channel] = note;
+                state.last_note[channel.as_usize()] = note;
                 (input, Some(note))
             } else if mask_var.contains(Mask::LAST_NOTE) {
-                (input, Some(state.last_note[channel]))
+                (input, Some(state.last_note[channel.as_usize()]))
             } else {
                 (input, None)
             };
 
             let (input, instrument) = if mask_var.contains(Mask::READ_INSTRUMENT) && !mask_var.contains(Mask::LAST_INSTRUMENT) {
                 let (input, instrument) = ranged(le_u8, 0..=99)(input)?;
-                state.last_instrument[channel] = instrument;
+                state.last_instrument[channel.as_usize()] = instrument;
                 (input, Some(instrument))
             } else if mask_var.contains(Mask::LAST_INSTRUMENT) {
-                (input, Some(state.last_instrument[channel]))
+                (input, Some(state.last_instrument[channel.as_usize()]))
             } else {
                 (input, None)
             };
@@ -261,22 +280,22 @@ fn pattern(input: &[u8]) -> IResult<&[u8], Pattern> {
             let (input, volume) = if mask_var.contains(Mask::READ_VOLUME) && !mask_var.contains(Mask::LAST_VOLUME) {
                 let (input, byte) = le_u8(input)?;
                 let volume = match byte {
-                    0..=64 => Volume::SetVolume(byte),
-                    128..=192 => Volume::Panning(byte - 128),
-                    65..=74 => Volume::FineVolumeUp(byte - 65),
-                    75..=84 => Volume::FineVolumeDown(byte - 75),
-                    85..=94 => Volume::VolumeSlideUp(byte - 85),
-                    95..=104 => Volume::VolumeSlideDown(byte - 95),
-                    105..=114 => Volume::PitchSlideDown(byte - 105),
-                    115..=124 => Volume::PitchSlideUp(byte - 115),
-                    193..=202 => Volume::PortamentoTo(byte - 193),
-                    203..=212 => Volume::Vibrato(byte - 203),
+                    0..=64 => VolumeCmd::SetVolume(byte),
+                    128..=192 => VolumeCmd::Panning(byte - 128),
+                    65..=74 => VolumeCmd::FineVolumeUp(byte - 65),
+                    75..=84 => VolumeCmd::FineVolumeDown(byte - 75),
+                    85..=94 => VolumeCmd::VolumeSlideUp(byte - 85),
+                    95..=104 => VolumeCmd::VolumeSlideDown(byte - 95),
+                    105..=114 => VolumeCmd::PitchSlideDown(byte - 105),
+                    115..=124 => VolumeCmd::PitchSlideUp(byte - 115),
+                    193..=202 => VolumeCmd::PortamentoTo(byte - 193),
+                    203..=212 => VolumeCmd::Vibrato(byte - 203),
                     _ => return Err(nom::Err::Error(nom::error::make_error(input, nom::error::ErrorKind::Verify))),
                 };
-                state.last_volume[channel] = volume;
+                state.last_volume[channel.as_usize()] = volume;
                 (input, Some(volume))
             } else if mask_var.contains(Mask::LAST_VOLUME) {
-                (input, Some(state.last_volume[channel]))
+                (input, Some(state.last_volume[channel.as_usize()]))
             } else {
                 (input, None)
             };
@@ -284,30 +303,32 @@ fn pattern(input: &[u8]) -> IResult<&[u8], Pattern> {
             let (input, command) = if mask_var.contains(Mask::READ_COMMAND) && !mask_var.contains(Mask::LAST_COMMAND) {
                 // TODO parse more
                 let (input, command) = tuple((ranged(le_u8, 0..=31), le_u8))(input)?;
-                state.last_command[channel] = command;
+                state.last_command[channel.as_usize()] = command;
                 (input, Some(command))
             } else if mask_var.contains(Mask::LAST_COMMAND) {
-                (input, Some(state.last_command[channel]))
+                (input, Some(state.last_command[channel.as_usize()]))
             } else {
                 (input, None)
             };
 
-            let channel = channel as u8;
             Ok((input, Command { channel, note, instrument, volume, command }))
         }
     }
+
+    let mut active_channels = ActiveChannels::NONE;
 
     let (input, rows) = all_consuming(count(
         map(
             many_till(command(&mut State::default()), tag(b"\0")),
             |(mut commands, _)| {
                 commands.sort_unstable_by_key(|cmd| cmd.channel);
+                active_channels |= commands.iter().map(|cmd| cmd.channel).collect();
                 commands
             },
         ),
         rows as usize,
     ))(input)?;
-    Ok((input, Pattern { rows }))
+    Ok((input, Pattern { active_channels, rows }))
 }
 
 fn name(input: &[u8]) -> IResult<&[u8], Name> {
@@ -320,7 +341,7 @@ fn dosfilename(input: &[u8]) -> IResult<&[u8], DOSFilename> {
     Ok((input, DOSFilename { bytes }))
 }
 
-pub fn instrument_header(input: &[u8]) -> IResult<&[u8], InstrumentHeader> {
+fn instrument_header(input: &[u8]) -> IResult<&[u8], InstrumentHeader> {
     let (input, _) = tag(b"IMPI")(input)?;
     let (input, filename) = dosfilename(input)?;
     let (input, nna) = le_u8(input)?;
@@ -346,34 +367,52 @@ pub fn instrument_header(input: &[u8]) -> IResult<&[u8], InstrumentHeader> {
     let (input, volenv) = envelope(input)?;
     let (input, panenv) = envelope(input)?;
     let (input, pitchenv) = envelope(input)?;
-    let (input, dummy) = byte_array(input)?;
+    let (input, _dummy) = byte_array::<4>(input)?;
+
+    let mut flags = InstrumentFlags::default();
+
+    if dfp & InstrumentHeader::dfp_ignorePanning == 0 {
+        flags |= InstrumentFlags::ENABLE_PANNING;
+    }
+    let dfp = dfp & !InstrumentHeader::dfp_ignorePanning;
+
+    if ifc & InstrumentHeader::ifc_enableCutoff != 0 {
+        flags |= InstrumentFlags::ENABLE_FILTER_CUTOFF;
+    }
+    let ifc = ifc & !InstrumentHeader::ifc_enableCutoff;
+
+    if ifr & InstrumentHeader::ifr_enableResonance != 0 {
+        flags |= InstrumentFlags::ENABLE_FILTER_RESONANCE;
+    }
+    let ifr = ifr & !InstrumentHeader::ifr_enableResonance;
+
     Ok((
         input,
         InstrumentHeader {
-            filename,
-            nna,
-            dct,
-            dca,
-            fadeout,
-            pps,
-            ppc,
-            gbv,
-            dfp,
-            rv,
-            rp,
-            trkver,
-            nos,
             name,
-            ifc,
-            ifr,
+            filename,
+            flags,
+            new_note_action: nna,
+            duplicate_check_type: dct,
+            duplicate_check_action: dca,
+            instrument_fadeout: fadeout.try_into().unwrap(),
+            pitch_pan_separation: pps,
+            pitch_pan_centre: ppc,
+            global_volume: gbv,
+            dfp: dfp.try_into().unwrap(),
+            random_volume_variation: rv.try_into().unwrap(),
+            random_panning_variation: rp.try_into().unwrap(),
+            trkver,
+            number_of_samples: nos,
+            initial_filter_cutoff: ifc.try_into().unwrap(),
+            initial_filter_resonance: ifr.try_into().unwrap(),
             mch,
             mpr,
             mbank,
-            keyboard,
-            volenv,
-            panenv,
-            pitchenv,
-            dummy,
+            keyboard: Box::new(keyboard),
+            volume_envelope: volenv,
+            panning_envelope: panenv,
+            pitch_filter_envelope: pitchenv,
         },
     ))
 }
@@ -386,18 +425,26 @@ fn envelope(input: &[u8]) -> IResult<&[u8], Envelope> {
     let (input, slb) = le_u8(input)?;
     let (input, sle) = le_u8(input)?;
     let (input, data) = array(node)(input)?;
-    let (input, reserved) = le_u8(input)?;
+    let (input, _reserved) = le_u8(input)?;
+
+    let flags = EnvelopeFlags::from_bits_truncate(flags);
+    let data: [_; 25] = data;
+    assert!(num <= 25);
+    assert!(lpb <= 25);
+    assert!(lpe <= 25 && lpb <= lpe);
+    assert!(slb <= 25);
+    assert!(sle <= 25 && slb <= sle);
+    let nodes = Vec::from(&data[..(num as usize)]);
+
     Ok((
         input,
         Envelope {
             flags,
-            num,
-            lpb,
-            lpe,
-            slb,
-            sle,
-            data,
-            reserved,
+            loop_start: lpb,
+            loop_end: lpe,
+            sustain_loop_start: slb,
+            sustain_loop_end: sle,
+            nodes,
         },
     ))
 }
@@ -408,14 +455,14 @@ fn node(input: &[u8]) -> IResult<&[u8], Node> {
     Ok((input, Node { value, tick }))
 }
 
-pub fn sample_header(input: &[u8]) -> IResult<&[u8], SampleHeader> {
+fn sample_header(input: &[u8]) -> IResult<&[u8], SampleHeader> {
     let (input, _) = tag(b"IMPS")(input)?;
     let (input, filename) = dosfilename(input)?;
     let (input, gvl) = le_u8(input)?;
-    let (input, flags) = le_u8(input)?;//, SampleFlags::from_bits_truncate)(input)?;
+    let (input, flags) = le_u8(input)?;
     let (input, vol) = le_u8(input)?;
     let (input, name) = name(input)?;
-    let (input, cvt) = le_u8(input)?;// CvtFlags::from_bits_truncate)(input)?;
+    let (input, cvt) = le_u8(input)?;
     let (input, dfp) = le_u8(input)?;
     let (input, length) = le_u32(input)?;
     let (input, loopbegin) = le_u32(input)?;
@@ -428,23 +475,22 @@ pub fn sample_header(input: &[u8]) -> IResult<&[u8], SampleHeader> {
     let (input, vid) = le_u8(input)?;
     let (input, vir) = le_u8(input)?;
     let (input, vit) = le_u8(input)?;
-    let flags = SampleFlags::from_parts(flags, cvt);
     Ok((
         input,
         SampleHeader {
             name,
             filename,
-            gvl,
-            flags,
-            vol,
-            dfp,
-            length,
-            loopbegin,
-            loopend,
+            flags: SampleFlags::from_parts(flags, cvt),
+            global_volume: gvl,
+            default_volume: vol,
+            sample_panning: dfp,
+            loop_start: loopbegin,
+            loop_end: loopend,
             samplerate_c5: c5speed,
-            susloopbegin,
-            susloopend,
-            samplepointer,
+            sustain_loop_start: susloopbegin,
+            sustain_loop_end: susloopend,
+            data_offset: samplepointer,
+            data_length: length,
             vibrato_speed: vis,
             vibrato_depth: vid,
             vibrato_rate: vir,

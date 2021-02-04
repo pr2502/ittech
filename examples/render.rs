@@ -2,8 +2,9 @@
 
 use anyhow::{Context, Result};
 use hound::{SampleFormat, WavSpec, WavWriter};
-use ittech::hl::{Command, Note, Order, Sample, Module};
 use ittech::parser;
+use ittech::{ActiveChannels, Command, Module, NoteCmd, Order, Sample, Channel};
+use std::ops::BitOr;
 use std::{env, fs, iter};
 
 const USAGE: &str = "usage: cargo run --example render -- <itmodule> <outputwav>";
@@ -77,14 +78,9 @@ fn resample(sample: &Sample, note: u8) -> Box<dyn Iterator<Item=f32> + '_> {
 fn render(module: Module) -> Result<Vec<f32>> {
     let active_channels = module.patterns
         .iter()
-        .flat_map(|pat| {
-            pat.rows.iter()
-                .flat_map(|row| row.iter())
-                .map(|cmd| cmd.channel as usize)
-        })
-        .max()
-        .context("file is silent (no active channels)")? + 1;
-    let amp = 1.0 / (active_channels as f32);
+        .map(|pat| pat.active_channels)
+        .fold(ActiveChannels::NONE, BitOr::bitor);
+    let amp = 1.0 / (active_channels.count() as f32);
 
     let total_rows = module.orders
         .iter()
@@ -94,11 +90,11 @@ fn render(module: Module) -> Result<Vec<f32>> {
         })
         .sum::<usize>();
 
-    let samples_per_row = SR * 60 / 4 / (module.tempo as usize);
+    let samples_per_row = SR * 60 / 4 / (module.tempo.as_u8() as usize);
 
     let mut buffer = vec![0.0f32; total_rows * samples_per_row];
     let mut channels = iter::from_fn(|| Some(None))
-        .take(active_channels)
+        .take(Channel::MAX as usize + 1)
         .collect::<Vec<_>>();
 
     module.orders
@@ -112,23 +108,23 @@ fn render(module: Module) -> Result<Vec<f32>> {
             let buffer = &mut buffer[offset..][..samples_per_row];
             for Command { channel, note, instrument, .. } in row {
                 match (note, instrument) {
-                    (Some(Note::Tone(note)), Some(instrument)) => {
+                    (Some(NoteCmd::Tone(note)), Some(instrument)) => {
                         if let Some(instrument) = &module.instruments.get((*instrument as usize).wrapping_sub(1)) {
                             if let Some((_, sample)) = instrument.keyboard.iter().find(|(n, _)| n == note) {
                                 if let Some(sample) = &module.samples.get((*sample as usize).wrapping_sub(1)) {
-                                    channels[*channel as usize] = Some(Box::new(resample(sample, *note)));
+                                    channels[channel.as_usize()] = Some(Box::new(resample(sample, *note)));
                                 }
                             }
                         }
                     }
-                    (Some(Note::Cut | Note::Fade), _) => {
-                        channels[*channel as usize] = None;
+                    (Some(NoteCmd::Cut | NoteCmd::Fade), _) => {
+                        channels[channel.as_usize()] = None;
                     }
                     _ => {}
                 }
             }
-            for channel in 0..active_channels {
-                if let Some(generator) = &mut channels[channel] {
+            for channel in active_channels.iter() {
+                if let Some(generator) = &mut channels[channel.as_usize()] {
                     buffer.iter_mut()
                         .zip(generator)
                         .for_each(|(o, i)| *o += i * amp);
