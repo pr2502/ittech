@@ -1,74 +1,8 @@
-//! Low-level structs for the parser.
-//!
-//! These are taken more or less verbatim from OpenMPT codebase and their layout in code relates
-//! directly to the byte layout of the files. The intention is for documentation and not for
-//! any parsing-by-transmute, so no `#[repr(C)]` here, all parsing is done using [`nom`].
-//!
-//! Structs in this module are do not contain all the necessary information to be used on their
-//! own, use the data types from [`crate::hl`] module.
-
+use bitflags::bitflags;
 use std::fmt::{self, Write};
 
 #[derive(Clone, Copy, Debug)]
-pub struct ITFileHeader {
-    // /// Magic Bytes (IMPM)
-    // pub id: [u8; 4],
-    /// Song Name, null-terminated (but may also contain nulls)
-    pub songname: Name,
-    /// Rows per Beat highlight
-    pub highlight_minor: u8,
-    /// Rows per Measure highlight
-    pub highlight_major: u8,
-    /// Number of Orders
-    pub ordnum: u16,
-    /// Number of Instruments
-    pub insnum: u16,
-    /// Number of Samples
-    pub smpnum: u16,
-    /// Number of Patterns
-    pub patnum: u16,
-    /// "Made With" Tracker
-    pub cwtv: u16,
-    /// "Compatible With" Tracker
-    pub cmwt: u16,
-    /// Header Flags
-    pub flags: u16,
-    /// Special Flags, for embedding extra information
-    pub special: u16,
-    /// Global Volume (0...128)
-    pub globalvol: u8,
-    /// Master Volume (0...128), referred to as Sample Volume in OpenMPT
-    pub mv: u8,
-    /// Initial Speed (1...255)
-    pub speed: u8,
-    /// Initial Tempo (31...255)
-    pub tempo: u8,
-    /// Pan Separation (0...128)
-    pub sep: u8,
-    /// Pitch Wheel Depth
-    pub pwd: u8,
-    /// Length of Song Message
-    pub msglength: u16,
-    /// Offset of Song Message in File (IT crops message after first null)
-    pub msgoffset: u32,
-    /// Some IT versions save an edit timer here. ChibiTracker writes "CHBI" here. OpenMPT writes
-    /// "OMPT" here in some cases, see Load_it.cpp
-    pub reserved: u32,
-    /// Initial Channel Panning
-    pub chnpan: [u8; 64],
-    /// Initial Channel Volume
-    pub chnvol: [u8; 64],
-}
-
-#[allow(non_upper_case_globals)]
-impl ITFileHeader {
-    pub const magic: [u8; 4] = *b"IMPM";
-}
-
-#[derive(Clone, Copy, Debug)]
 pub struct InstrumentHeader {
-    // /// Magic Bytes (IMPI)
-    // pub id: [u8; 4],
     /// DOS Filename, null-terminated
     pub filename: DOSFilename,
     /// New Note Action
@@ -96,8 +30,6 @@ pub struct InstrumentHeader {
     pub trkver: u16,
     /// Number of embedded samples
     pub nos: u8,
-    /// Reserved
-    pub reserved1: u8,
     /// Instrument Name, null-terminated (but may also contain nulls)
     pub name: Name,
     /// Filter Cutoff
@@ -119,7 +51,7 @@ pub struct InstrumentHeader {
     /// Pitch / Filter Envelope
     pub pitchenv: Envelope,
     /// IT saves some additional padding bytes to match the size of the old instrument format for
-    /// simplified loading. We use them for some hacks.
+    /// simplified loading. We [OpenMPT] use them for some hacks.
     pub dummy: [u8; 4],
 }
 
@@ -153,13 +85,26 @@ pub struct Envelope {
     pub reserved: u8,
 }
 
-#[allow(non_upper_case_globals)]
-impl Envelope {
-    pub const flags_envEnabled: u8    = 0x01;
-    pub const flags_envLoop: u8       = 0x02;
-    pub const flags_envSustain: u8    = 0x04;
-    pub const flags_envCarry: u8      = 0x08;
-    pub const flags_envFilter: u8     = 0x80;
+bitflags! {
+    struct EnvelopeFlags: u8 {
+        /// Envelope on/off, 1 = on, 0 = off
+        const ENABLED = 1 << 0;
+
+        /// Loop on/off, 1 = on, 0 = off
+        const LOOP = 1 << 1;
+
+        /// SusLoop on/off, 1 = on, 0 = off
+        const SUSTAIN = 1 << 2;
+
+        // These are not mentioned in ITTECH.TXT and there are no comment in OpenMPT, documentation
+        // here is just my assumption.
+        //
+        // I assume CARRY is for the carry button in Instrument configuration in OpenMPT.
+        const CARRY = 1 << 3;
+        // Filter is probably only useful on a pitch envelope and makes it act like a filter
+        // envelope instead.
+        const FILTER = 1 << 7;
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -171,20 +116,16 @@ pub struct Node {
 #[allow(non_snake_case)]
 #[derive(Clone, Copy, Debug)]
 pub struct SampleHeader {
-    // /// Magic Bytes (IMPS)
-    // pub id: [u8; 4],
+    /// Sample Name, null-terminated (but may also contain nulls)
+    pub name: Name,
     /// DOS Filename, null-terminated
     pub filename: DOSFilename,
     /// Global Volume
     pub gvl: u8,
-    /// Sample Flags
-    pub flags: u8,
+    /// combined Sample Flags and Sample Import Format
+    pub flags: SampleFlags,
     /// Default Volume
     pub vol: u8,
-    /// Sample Name, null-terminated (but may also contain nulls)
-    pub name: Name,
-    /// Sample Import Format
-    pub cvt: u8,
     /// Sample Panning
     pub dfp: u8,
     /// Sample Length (in samples)
@@ -194,7 +135,7 @@ pub struct SampleHeader {
     /// Sample Loop End (in samples)
     pub loopend: u32,
     /// C-5 frequency
-    pub C5Speed: u32,
+    pub samplerate_c5: u32,
     /// Sample Sustain Begin (in samples)
     pub susloopbegin: u32,
     /// Sample Sustain End (in samples)
@@ -202,40 +143,91 @@ pub struct SampleHeader {
     /// Pointer to sample data
     pub samplepointer: u32,
     /// Auto-Vibrato Rate (called Sweep in IT)
-    pub vis: u8,
+    pub vibrato_speed: u8,
     /// Auto-Vibrato Depth
-    pub vid: u8,
+    pub vibrato_depth: u8,
     /// Auto-Vibrato Sweep (called Rate in IT)
-    pub vir: u8,
+    pub vibrato_rate: u8,
     /// Auto-Vibrato Type
-    pub vit: u8,
+    pub vibrato_type: u8,
 }
 
-#[allow(non_upper_case_globals)]
-impl SampleHeader {
-    pub const magic: [u8; 4] = *b"IMPS";
+bitflags! {
+    pub struct SampleFlags: u16 {
+        // Originally `flags` field.
 
-    pub const flags_sampleDataPresent: u8 = 0x01;
-    pub const flags_sample16Bit: u8       = 0x02;
-    pub const flags_sampleStereo: u8      = 0x04;
-    pub const flags_sampleCompressed: u8  = 0x08;
-    pub const flags_sampleLoop: u8        = 0x10;
-    pub const flags_sampleSustain: u8     = 0x20;
-    pub const flags_sampleBidiLoop: u8    = 0x40;
-    pub const flags_sampleBidiSustain: u8 = 0x80;
+        /// On = sample associated with header.
+        const DATA_PRESENT = 1 << 0;
 
-    pub const dfp_enablePanning: u8 = 0x80;
+        /// On = 16 bit, Off = 8 bit.
+        const DATA_16BIT = 1 << 1;
 
-    pub const cvtSignedSample: u8   = 0x01;
-    pub const cvtOPLInstrument: u8  = 0x40; // FM instrument in MPTM
-    pub const cvtExternalSample: u8 = 0x80; // Keep MPTM sample on disk
-    pub const cvtADPCMSample: u8    = 0xFF; // MODPlugin :(
+        /// On = stereo, Off = mono. Stereo samples not supported yet
+        const STEREO = 1 << 2;
 
-    // ITTECH.TXT says these convert flags are "safe to ignore".
-    // IT doesn't ignore them, though, so why should we? :)
-    pub const cvtBigEndian: u8      = 0x02;
-    pub const cvtDelta: u8          = 0x04;
-    pub const cvtPTM8to16: u8       = 0x08;
+        /// On = compressed samples.
+        const COMPRESSED = 1 << 3;
+
+        /// On = Use loop
+        const LOOP = 1 << 4;
+
+        /// On = Use sustain loop
+        const SUSTAIN = 1 << 5;
+
+        /// On = Ping Pong loop, Off = Forwards loop
+        const BIDI_LOOP = 1 << 6;
+
+        /// On = Ping Pong Sustain loop, Off = Forwards Sustain loop
+        const BIDI_SUSTAIN = 1 << 7;
+
+        // Originally `cvt` field (shifted by additional 8 bits).
+        //
+        // From ITTECH.TXT:
+        // > Convert - bits other than bit 0 are used internally for the loading of alternative
+        // > formats.
+
+        /// Off: Samples are unsigned   } IT 2.01 and below use unsigned samples
+        ///  On: Samples are signed     } IT 2.02 and above use signed samples
+        const DATA_SIGNED = 1 << 0 + 8;
+
+        // From OpenMPT:
+        // > ITTECH.TXT says these convert flags are "safe to ignore".
+        // > IT doesn't ignore them, though, so why should we? :)
+
+        /// Off: Intel lo-hi byte order for 16-bit samples
+        ///  On: Motorola hi-lo byte order for 16-bit samples
+        const DATA_BIG_ENDIAN = 1 << 1 + 8;
+        /// Off: Samples are stored as PCM values
+        ///  On: Samples are stored as Delta values
+        const DELTA = 1 << 2 + 8;
+        /// On: Samples are stored as byte delta values (for PTM loader)
+        const PTM8_TO_16 = 1 << 3 + 8;
+
+        // These seem to be missing from OpenMPT codebase, which hopefully means they're safe to
+        // ignore.
+        /// On: Samples are stored as TX-Wave 12-bit values
+        const TX_WAVE = 1 << 4 + 8;
+        /// On: Left/Right/All Stereo prompt
+        const STEREO_PROMPT = 1 << 5 + 8;
+
+        // These are OpenMPT extensions, ITTECH.TXT lists them as "Reserved"
+        /// cvtOPLInstrument -- FM instrument in MPTM
+        const OPL_INSTRUMENT = 1 << 6 + 8;
+        /// cvtExternalSample -- Keep MPTM sample on disk
+        const EXTERNAL_SAMPLE = 1 << 7 + 8;
+
+        // I'm not sure what does this mean yet, but there is a frown next to it in the OpenMPT
+        // codebase so I assume we don't support it, or something.
+        /// cvtADPCMSample - MODPlugin :(
+        const ADPCM_SAMPLE = 0xFF << 8; // MODPlugin :(
+    }
+}
+
+impl SampleFlags {
+    pub fn from_parts(flags: u8, cvt: u8) -> SampleFlags {
+        let bits = (flags as u16) | ((cvt as u16) << 8);
+        SampleFlags::from_bits_truncate(bits)
+    }
 }
 
 #[derive(Clone, Copy)]
