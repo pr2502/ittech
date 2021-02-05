@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use ittech::parser;
-use ittech::{ActiveChannels, Command, Module, NoteCmd, Order, Sample, Channel};
+use ittech::{ActiveChannels, Channel, Command, Module, NoteCmd, Order, Sample};
 use std::ops::BitOr;
 use std::{env, fs, iter};
 
@@ -107,12 +107,12 @@ fn render(module: Module) -> Result<Vec<f32>> {
         .for_each(|(row, offset)| {
             let buffer = &mut buffer[offset..][..samples_per_row];
             for Command { channel, note, instrument, .. } in row {
-                match (note, instrument) {
-                    (Some(NoteCmd::Tone(note)), Some(instrument)) => {
-                        if let Some(instrument) = &module.instruments.get((*instrument as usize).wrapping_sub(1)) {
-                            if let Some((_, sample)) = instrument.keyboard.iter().find(|(n, _)| n == note) {
-                                if let Some(sample) = &module.samples.get((*sample as usize).wrapping_sub(1)) {
-                                    channels[channel.as_usize()] = Some(Box::new(resample(sample, *note)));
+                match (*note, instrument) {
+                    (Some(NoteCmd::Play(note)), Some(instrument)) => {
+                        if let Some(instrument) = &module.instruments.get(instrument.as_u8() as usize) {
+                            if let Some((_, Some(sample))) = instrument.keyboard.iter().find(|(n, _)| *n == note) {
+                                if let Some(sample) = &module.samples.get(sample.as_u8() as usize) {
+                                    channels[channel.as_usize()] = Some(Box::new(resample(sample, note.into())));
                                 }
                             }
                         }

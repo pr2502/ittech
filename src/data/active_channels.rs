@@ -1,9 +1,9 @@
 use super::RangedU8;
+use std::convert::{TryFrom, TryInto};
 use std::fmt::{self, Debug};
 use std::iter::FromIterator;
-use std::ops::{BitOr, BitOrAssign};
-use std::convert::{TryFrom, TryInto};
 use std::num::TryFromIntError;
+use std::ops::{BitOr, BitOrAssign};
 
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
 pub struct Channel(RangedU8<0, 63>);
