@@ -8,6 +8,7 @@ Following is a nearly verbatim copy of ITTECH.TXT as taken from Impulse Tracker
 
 ## Impulse Header Layout
 
+```txt
             0   1   2   3   4   5   6   7   8   9   A   B   C   D   E   F
           ┌───┬───┬───┬───┬───────────────────────────────────────────────┐
     0000: │'I'│'M'│'P'│'M'│ Song Name, max 26 characters, includes NULL   │
@@ -110,9 +111,11 @@ Following is a nearly verbatim copy of ITTECH.TXT as taken from Impulse Tracker
                      Valid values are from 0->199.
                      255 = "---", End of song marker
                      254 = "+++", Skip to next order
+```
 
 ## Old Impulse Instrument Format (cmwt < 200h)
 
+```txt
             0   1   2   3   4   5   6   7   8   9   A   B   C   D   E   F
           ┌───┬───┬───┬───┬───────────────────────────────────────────────┐
     0000: │'I'│'M'│'P'│'I'│ DOS FileName (12345678.123)                   │
@@ -172,9 +175,11 @@ Following is a nearly verbatim copy of ITTECH.TXT as taken from Impulse Tracker
            (after which note fade applies)
 
           Node data: Tick THEN magnitude
+```
 
 ## Impulse Instrument Format
 
+```txt
             0   1   2   3   4   5   6   7   8   9   A   B   C   D   E   F
           ┌───┬───┬───┬───┬───────────────────────────────────────────────┐
     0000: │'I'│'M'│'P'│'I'│ DOS FileName (12345678.123)                   │
@@ -237,9 +242,11 @@ Following is a nearly verbatim copy of ITTECH.TXT as taken from Impulse Tracker
            and a note (C-0 -> B-9). These are stored as note/sample byte pairs
            (note first, range 0->119 for C-0 to B-9, sample ranges from
            1-99, 0=no sample)
+```
 
 #### Envelope layout
 
+```txt
             Envelopes: 3 structures, first for volume (130h), second for
                        panning (182h), third for pitch (1D4h).
 
@@ -269,9 +276,11 @@ Following is a nearly verbatim copy of ITTECH.TXT as taken from Impulse Tracker
             Total length of an instrument is 547 bytes, but 554 bytes are
             written, just to simplify the loading of the old format. (Hence
             there are 7 'wasted' bytes per instrument)
+```
 
 ## Impulse Sample Format
 
+```txt
             0   1   2   3   4   5   6   7   8   9   A   B   C   D   E   F
           ┌───┬───┬───┬───┬───────────────────────────────────────────────┐
     0000: │'I'│'M'│'P'│'S'│ DOS Filename (12345678.123)                   │
@@ -360,9 +369,11 @@ Following is a nearly verbatim copy of ITTECH.TXT as taken from Impulse Tracker
             Bit 7: Reserved
 
        DfP - Default Pan. Bits 0->6 = Pan value, Bit 7 ON to USE (opposite of inst)
+```
 
 ## Impulse Pattern Format
 
+```txt
             0   1   2   3   4   5   6   7   8   9   A   B   C   D   E   F
           ┌───────┬───────┬───┬───┬───┬───┬───────────────────────────────┐
     0000: │Length │ Rows  │ x │ x │ x │ x │ Packed data................   │
@@ -433,9 +444,11 @@ Following is a nearly verbatim copy of ITTECH.TXT as taken from Impulse Tracker
                     commandvalue = lastcommandvalue for channel
             }
             Goto GetNextChannelMarker
+```
 
 ## Mathematics
 
+```txt
     Abbreviations:
      FV = Final Volume (Ranges from 0 to 128). In versions 1.04+, mixed output
           devices are reduced further to a range from 0 to 64 due to lack of
@@ -506,9 +519,11 @@ Following is a nearly verbatim copy of ITTECH.TXT as taken from Impulse Tracker
      Each value on the envelope equates to half a semitone. This is interpolated
      64 times for smooth pitch sliding. Positive values indicate a pitch variation
      UP of x semitones, negative values indicate a pitch variation down.
+```
 
 ## General Info
 
+```txt
     The player in Impulse Tracker 'allocates' channels to notes whenever they
     are *PLAYED*. In sample mode, the allocation is simple:
                    Virtual Channel (number) = 'Host' channel (number)
@@ -550,9 +565,11 @@ Following is a nearly verbatim copy of ITTECH.TXT as taken from Impulse Tracker
                  channel. Obviously, there is no best way to do this - I
                  encourage you to experiment and find new algorithms for
                  yourself.
+```
 
 ## Internal Tables
 
+```txt
     FineSineData       Label   Byte
             DB       0,  2,  3,  5,  6,  8,  9, 11, 12, 14, 16, 17, 19, 20, 22, 23
             DB      24, 26, 27, 29, 30, 32, 33, 34, 36, 37, 38, 39, 41, 42, 43, 44
@@ -727,9 +744,11 @@ Following is a nearly verbatim copy of ITTECH.TXT as taken from Impulse Tracker
             DW      27554, 27455, 27356, 27258, 27159, 27062, 26964, 26867 ;240->247
             DW      26770, 26674, 26577, 26482, 26386, 26291, 26196, 26102 ;248->255
             DW      26008                                                  ; 256
+```
 
 ## Effect Info
 
+```txt
     Here's about all the info I can think of for effects. "Process" variables are
     variables used internally by effects to control the direction of playback..
     This section has not been completed yet.
@@ -898,3 +917,4 @@ Following is a nearly verbatim copy of ITTECH.TXT as taken from Impulse Tracker
     WFx     Subtract x from volume straight away. Check and clip values < 0 to 0
 
     .. sorry this is incomplete..
+```

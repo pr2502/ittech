@@ -1,5 +1,5 @@
+use super::{InstrumentHeader, Name, Pattern, RangedU8, Sample};
 use bitflags::bitflags;
-use super::{Name, InstrumentHeader, Sample, Pattern, RangedU8};
 
 
 #[derive(Debug)]
@@ -117,10 +117,10 @@ bitflags! {
         ///
         /// Note: v1.04+ of IT may have song messages of up to
         ///       8000 bytes included.
-        const MESSAGE_ATTACHED = 1 << 0 + 16;
+        const MESSAGE_ATTACHED = 1 << (0 + 16);
 
         /// MIDI configuration embedded
-        const MIDI_CONIFG_EMBEDDED = 1 << 3 + 16;
+        const MIDI_CONIFG_EMBEDDED = 1 << (3 + 16);
     }
 }
 

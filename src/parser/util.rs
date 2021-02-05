@@ -3,6 +3,7 @@ use nom::combinator::verify;
 use nom::error::ParseError;
 use nom::multi::count;
 use nom::{IResult, Parser};
+use std::convert::TryInto;
 use std::ops::RangeBounds;
 
 /// Consumes N bytes and returns the result as an array.
@@ -19,14 +20,12 @@ pub fn array<I, O, E, F, const N: usize>(
 ) -> impl FnOnce(I) -> IResult<I, [O; N], E>
 where
     I: Clone + PartialEq,
-    O: Copy + Default,
     E: ParseError<I>,
     F: Parser<I, O, E>,
 {
     move |input: I| {
         let (rest, vec): (_, Vec<_>) = count(f, N)(input)?;
-        let mut arr = [O::default(); N];
-        arr.copy_from_slice(&vec);
+        let arr = vec.try_into().unwrap_or_else(|_| unreachable!());
         Ok((rest, arr))
     }
 }

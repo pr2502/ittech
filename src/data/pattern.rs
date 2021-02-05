@@ -14,35 +14,83 @@ pub struct Pattern {
 pub struct Command {
     pub channel: Channel,
     pub note: Option<NoteCmd>,
-    pub instrument: Option<u8>,
-    pub volume: Option<VolumeCmd>,
-    pub command: Option<(u8, u8)>,
+    pub instrument: Option<InstrumentId>,
+    pub volume: Option<(VolumeCmd, u8)>,
+    pub effect: Option<(EffectCmd, u8)>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub enum NoteCmd {
-    Tone(u8),
+    Play(Note),
     Off,
     Cut,
     Fade,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub struct Note(RangedU8<0, 119>);
+
+pub type InstrumentId = RangedU8<0, 98>;
+
 #[derive(Clone, Copy, Debug)]
 pub enum VolumeCmd {
-    SetVolume(u8),
-    Panning(u8),
-    FineVolumeUp(u8),
-    FineVolumeDown(u8),
-    VolumeSlideUp(u8),
-    VolumeSlideDown(u8),
-    PitchSlideDown(u8),
-    PitchSlideUp(u8),
-    PortamentoTo(u8),
-    Vibrato(u8),
+    SetVolume,
+    Panning,
+    FineVolumeUp,
+    FineVolumeDown,
+    VolumeSlideUp,
+    VolumeSlideDown,
+    PitchSlideDown,
+    PitchSlideUp,
+    PortamentoTo,
+    Vibrato,
 }
 
-#[derive(Clone, Copy)]
-pub struct Note(RangedU8<0, 119>);
+#[derive(Clone, Copy, Debug)]
+pub enum EffectCmd {
+	Arpeggio,
+	PortamentoUp,
+	PortamentoDown,
+	TonePortamento,
+	Vibrato,
+	TonePortaVol,
+	VibratoVol,
+	Tremolo,
+	Panning8,
+	Offset,
+	VolumeSlide,
+	PositionJump,
+	Volume,
+	PatternBreak,
+	Retrig,
+	Speed,
+	Tempo,
+	Tremor,
+	MODCMDEX,
+	S3MCMDEX,
+	ChannelVolume,
+	ChannelVolSlide,
+	GlobalVolume,
+	GlobalVolslide,
+	KeyOff,
+	FineVibrato,
+	Panbrello,
+	XFinePortaUpDown,
+	PanningSlide,
+	SetEnvPosition,
+	MIDI,
+	SmoothMIDI,
+	DelayCut,
+	XParam,
+	NoteSlideUp,         // IMF Gxy / PTM Jxy (Slide y notes up every x ticks)
+	NoteSlideDown,       // IMF Hxy / PTM Kxy (Slide y notes down every x ticks)
+	NoteSlideUpRetrig,   // PTM Lxy (Slide y notes up every x ticks + retrigger note)
+	NoteSlideDownRetrig, // PTM Mxy (Slide y notes down every x ticks + retrigger note)
+	ReverseOffset,       // PTM Nxx Revert sample + offset
+	DBMEcho,             // DBM enable/disable echo
+	OffsetPercentage,    // PLM Percentage Offset
+}
+
 
 impl TryFrom<u8> for Note {
     type Error = TryFromIntError;
@@ -67,12 +115,12 @@ fn note_string(note: Note) -> [u8; 3] {
 
 impl Debug for Note {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(unsafe { str::from_utf8_unchecked(&note_string(*self)) })
+        f.write_str(str::from_utf8(&note_string(*self)).unwrap())
     }
 }
 
 impl Display for Note {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(unsafe { str::from_utf8_unchecked(&note_string(*self)) })
+        f.write_str(str::from_utf8(&note_string(*self)).unwrap())
     }
 }

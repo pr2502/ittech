@@ -16,6 +16,7 @@ pub struct DOSFilename {
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
 pub struct RangedU8<const LOW: u8, const HIGH: u8>(u8);
 
+
 impl<const LOW: u8, const HIGH: u8> RangedU8<LOW, HIGH> {
     pub fn as_u8(self) -> u8 {
         self.0

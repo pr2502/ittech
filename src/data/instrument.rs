@@ -1,4 +1,4 @@
-use super::{DOSFilename, Envelope, Name, RangedU8, Sample};
+use super::{DOSFilename, Envelope, Name, Note, RangedU8, Sample};
 use bitflags::bitflags;
 
 
@@ -44,7 +44,7 @@ pub struct InstrumentHeader {
     pub global_volume: u8,
 
     /// Panning
-    pub dfp: RangedU8<0, 128>,
+    pub default_panning: RangedU8<0, 128>,
 
     /// Random volume variation (percentage)
     pub random_volume_variation: RangedU8<0, 100>,
@@ -74,7 +74,11 @@ pub struct InstrumentHeader {
     pub mbank: [u8; 2],
 
     /// Sample / Transpose map
-    pub keyboard: Box<[(u8, u8); 120]>,
+    // TODO replace with a lookup table where Key (Note) is the index.
+    // [(Key, Value)] just doesn't seem to make sense when every key from 0 to 119 must be present
+    // exactly once anyway. it's understandable that some implementations might not sort it but i
+    // don't expect
+    pub keyboard: Box<[(Note, Option<SampleId>); 120]>,
 
     /// Volume Envelope
     pub volume_envelope: Envelope,
@@ -85,6 +89,8 @@ pub struct InstrumentHeader {
     /// Pitch / Filter Envelope
     pub pitch_filter_envelope: Envelope,
 }
+
+pub type SampleId = RangedU8<0, 98>;
 
 bitflags! {
     /// Move boolean flags out of values.
