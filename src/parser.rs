@@ -2,11 +2,11 @@ use crate::data::*;
 use bitflags::bitflags;
 use nom::bytes::complete::{tag, take};
 use nom::combinator::{all_consuming, map};
-use nom::error::Error;
+use nom::error::{ErrorKind, ParseError};
 use nom::multi::{count, many_till};
 use nom::number::complete::{be_i16, le_i16, le_i8, le_u16, le_u32, le_u8};
 use nom::sequence::tuple;
-use nom::IResult;
+use nom::{Err, IResult};
 use pattern::pattern;
 use std::convert::{TryFrom, TryInto};
 use util::*;
@@ -17,7 +17,7 @@ mod util;
 
 
 /// Parse Impulse Tracker module file (.it)
-pub fn module(input: &[u8]) -> Result<Module, nom::Err<Error<&[u8]>>> {
+pub fn module<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> Result<Module, Err<E>> {
     // Save the whole input for offset parsing.
     let whole_input = input;
 
@@ -68,7 +68,7 @@ pub fn module(input: &[u8]) -> Result<Module, nom::Err<Error<&[u8]>>> {
                 continue
             }
             if offset >= input.len() {
-                return Err(nom::Err::Error(nom::error::make_error(input, nom::error::ErrorKind::Eof)));
+                return Err(Err::Error(E::from_error_kind(input, ErrorKind::Eof)));
             }
             let (_, pat) = pattern(&whole_input[offset..])?;
             patterns.push(pat);
@@ -125,7 +125,7 @@ pub fn module(input: &[u8]) -> Result<Module, nom::Err<Error<&[u8]>>> {
 }
 
 /// Parse Impulse Tracker instrument file (.iti)
-pub fn instrument(input: &[u8]) -> Result<Instrument, nom::Err<Error<&[u8]>>> {
+pub fn instrument<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> Result<Instrument, Err<E>> {
     // Save the whole input for offset parsing.
     let whole_input = input;
 
@@ -135,7 +135,7 @@ pub fn instrument(input: &[u8]) -> Result<Instrument, nom::Err<Error<&[u8]>>> {
 }
 
 /// Parse Impulse Tracker sample file (.its)
-pub fn sample(input: &[u8]) -> Result<Sample, nom::Err<Error<&[u8]>>> {
+pub fn sample<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> Result<Sample, Err<E>> {
     // Save the whole input for offset parsing.
     let whole_input = input;
 
@@ -143,7 +143,7 @@ pub fn sample(input: &[u8]) -> Result<Sample, nom::Err<Error<&[u8]>>> {
     todo!()
 }
 
-fn sample_data<'i>(header: &SampleHeader, whole_input: &'i [u8]) -> Result<Option<Vec<f32>>, nom::Err<Error<&'i [u8]>>> {
+fn sample_data<'i, E: ParseError<&'i [u8]>>(header: &SampleHeader, whole_input: &'i [u8]) -> Result<Option<Vec<f32>>, Err<E>> {
     let flags = header.flags;
 
     if !flags.contains(SampleFlags::DATA_PRESENT) {
@@ -176,14 +176,14 @@ fn sample_data<'i>(header: &SampleHeader, whole_input: &'i [u8]) -> Result<Optio
     }
 }
 
-fn order(input: &[u8]) -> IResult<&[u8], Order> {
+fn order<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], Order, E> {
     let (input, byte) = le_u8(input)?;
     let order = match byte {
         0..=199 => Order::Index(byte.cast()),
         200..=253 => {
             // TODO ITTECH.TXT says only 0..=199 are allowed, but 200..=253 are not used for
             // anything else so we could parse them too.
-            return Err(nom::Err::Error(nom::error::make_error(input, nom::error::ErrorKind::Verify)));
+            return Err(Err::Error(E::from_error_kind(input, ErrorKind::Verify)));
         },
         254 => Order::Separator,
         255 => Order::EndOfSong,
@@ -191,17 +191,17 @@ fn order(input: &[u8]) -> IResult<&[u8], Order> {
     Ok((input, order))
 }
 
-fn name(input: &[u8]) -> IResult<&[u8], Name> {
+fn name<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], Name, E> {
     let (input, bytes) = byte_array(input)?;
     Ok((input, Name { bytes }))
 }
 
-fn dosfilename(input: &[u8]) -> IResult<&[u8], DOSFilename> {
+fn dosfilename<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], DOSFilename, E> {
     let (input, bytes) = byte_array(input)?;
     Ok((input, DOSFilename { bytes }))
 }
 
-fn instrument_header(input: &[u8]) -> IResult<&[u8], InstrumentHeader> {
+fn instrument_header<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], InstrumentHeader, E> {
     let (input, _) = tag(b"IMPI")(input)?;
     let (input, filename) = dosfilename(input)?;
     let (input, nna) = le_u8(input)?;
@@ -227,7 +227,7 @@ fn instrument_header(input: &[u8]) -> IResult<&[u8], InstrumentHeader> {
     let (input, volenv) = envelope(input)?;
     let (input, panenv) = envelope(input)?;
     let (input, pitchenv) = envelope(input)?;
-    let (input, _dummy) = byte_array::<4>(input)?;
+    let (input, _dummy) = byte_array::<_, 4>(input)?;
 
     let mut flags = InstrumentFlags::default();
 
@@ -277,7 +277,7 @@ fn instrument_header(input: &[u8]) -> IResult<&[u8], InstrumentHeader> {
     ))
 }
 
-fn sample_map(input: &[u8]) -> IResult<&[u8], SampleMap> {
+fn sample_map<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], SampleMap, E> {
     scan_count(
         120,
         tuple((ranged(le_u8, 0..=119), ranged(le_u8, 0..=99))),
@@ -291,7 +291,7 @@ fn sample_map(input: &[u8]) -> IResult<&[u8], SampleMap> {
     )(input)
 }
 
-fn envelope(input: &[u8]) -> IResult<&[u8], Envelope> {
+fn envelope<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], Envelope, E> {
     let (input, flags) = le_u8(input)?;
     let (input, num) = le_u8(input)?;
     let (input, lpb) = le_u8(input)?;
@@ -323,13 +323,13 @@ fn envelope(input: &[u8]) -> IResult<&[u8], Envelope> {
     ))
 }
 
-fn node(input: &[u8]) -> IResult<&[u8], Node> {
+fn node<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], Node, E> {
     let (input, value) = le_i8(input)?;
     let (input, tick) = le_u16(input)?;
     Ok((input, Node { value, tick }))
 }
 
-fn sample_header(input: &[u8]) -> IResult<&[u8], SampleHeader> {
+fn sample_header<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], SampleHeader, E> {
     let (input, _) = tag(b"IMPS")(input)?;
     let (input, filename) = dosfilename(input)?;
     let (input, gvl) = le_u8(input)?;
