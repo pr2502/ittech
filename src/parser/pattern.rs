@@ -41,7 +41,7 @@ impl Default for State {
 }
 
 
-pub(super) fn pattern(input: &[u8]) -> IResult<&[u8], Pattern> {
+pub(super) fn pattern<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], Pattern, E> {
     let (input, length) = le_u16(input)?;
     let (input, rows) = le_u16(input)?;
     let (input, _padding) = take(4usize)(input)?;
@@ -64,7 +64,12 @@ pub(super) fn pattern(input: &[u8]) -> IResult<&[u8], Pattern> {
     Ok((rest, Pattern { active_channels, rows }))
 }
 
-fn command(state: &mut State) -> impl FnMut(&[u8]) -> IResult<&[u8], Command> + '_ {
+fn command<'i, 's, E: ParseError<&'i [u8]>>(
+    state: &'s mut State
+) -> impl FnMut(&'i [u8]) -> IResult<&'i [u8], Command, E> + 's
+where
+    'i: 's,
+{
     move |input| {
         let (input, channel_var) = le_u8(input)?;
 
@@ -87,12 +92,12 @@ fn command(state: &mut State) -> impl FnMut(&[u8]) -> IResult<&[u8], Command> + 
     }
 }
 
-fn mask_var<'i>(
+fn mask_var<'i, E: ParseError<&'i [u8]>>(
     state: &mut State,
     channel: Channel,
     channel_mask: ChannelMask,
     input: &'i [u8],
-) -> IResult<&'i [u8], Mask> {
+) -> IResult<&'i [u8], Mask, E> {
     if channel_mask.contains(ChannelMask::LAST_MASKVAR) {
         let (input, mask_var) = le_u8(input)?;
         let mask_var = Mask::from_bits_truncate(mask_var);
@@ -103,12 +108,12 @@ fn mask_var<'i>(
     }
 }
 
-fn note<'i>(
+fn note<'i, E: ParseError<&'i [u8]>>(
     state: &mut State,
     channel: Channel,
     mask_var: Mask,
     input: &'i [u8],
-) -> IResult<&'i [u8], Option<NoteCmd>> {
+) -> IResult<&'i [u8], Option<NoteCmd>, E> {
     if mask_var.contains(Mask::READ_NOTE) && !mask_var.contains(Mask::LAST_NOTE) {
         let (input, note_var) = le_u8(input)?;
         let note = match note_var {
@@ -126,12 +131,12 @@ fn note<'i>(
     }
 }
 
-fn instrument<'i>(
+fn instrument<'i, E: ParseError<&'i [u8]>>(
     state: &mut State,
     channel: Channel,
     mask_var: Mask,
     input: &'i [u8],
-) -> IResult<&'i [u8], Option<InstrumentId>> {
+) -> IResult<&'i [u8], Option<InstrumentId>, E> {
     if mask_var.contains(Mask::READ_INSTRUMENT) && !mask_var.contains(Mask::LAST_INSTRUMENT) {
         let (input, instrument) = ranged(le_u8, 0..=99)(input)?;
         let instrument = match instrument {
@@ -148,12 +153,12 @@ fn instrument<'i>(
     }
 }
 
-fn volume<'i>(
+fn volume<'i, E: ParseError<&'i [u8]>>(
     state: &mut State,
     channel: Channel,
     mask_var: Mask,
     input: &'i [u8],
-) -> IResult<&'i [u8], Option<VolumeCmd>> {
+) -> IResult<&'i [u8], Option<VolumeCmd>, E> {
     if mask_var.contains(Mask::READ_VOLUME) && !mask_var.contains(Mask::LAST_VOLUME) {
         let (input, byte) = le_u8(input)?;
         let volume = match byte {
@@ -169,9 +174,7 @@ fn volume<'i>(
             203 ..= 212 => VolumeCmd::Vibrato((byte - 203).cast()),
             _ => {
                 // There is a gap in between the intervals so we can't simply use `ranged`.
-                use nom::error::{make_error, ErrorKind};
-                use nom::Err::Error;
-                return Err(Error(make_error(input, ErrorKind::Verify)));
+                return Err(Err::Error(E::from_error_kind(input, ErrorKind::Verify)));
             },
         };
         state.last_volume[channel.as_usize()] = Some(volume);
@@ -183,17 +186,17 @@ fn volume<'i>(
     }
 }
 
-fn effect<'i>(
+fn effect<'i, E: ParseError<&'i [u8]>>(
     state: &mut State,
     channel: Channel,
     mask_var: Mask,
     input: &'i [u8],
-) -> IResult<&'i [u8], Option<EffectCmd>> {
+) -> IResult<&'i [u8], Option<EffectCmd>, E> {
     if mask_var.contains(Mask::READ_COMMAND) && !mask_var.contains(Mask::LAST_COMMAND) {
         // We're using effects definition from OpenMPT but we're trying to adhere to ITTECH.TXT so
         // we only parse the first 31. In the future we might want to support the `itEx` format
         // from OpenMPT instead.
-        let (input, (effect, param)) = tuple((ranged(le_u8, 0..=31), le_u8))(input)?;
+        let (input, (effect, param)) = tuple((ranged(le_u8, 0..=0x1A), le_u8))(input)?;
         let effect = if effect == 0x00 {
             None
         } else {
@@ -286,7 +289,7 @@ fn effect<'i>(
                 0x18 => EffectCmd::SetPanningPosition(param),
                 0x19 => EffectCmd::Panbrello(x.cast(), y.cast()),
                 0x1A => EffectCmd::MIDI(param),
-                _ => panic!("unsupported effect: {:#02X}", effect), // Used `ranged` combinator earlier.
+                _ => unreachable!(), // Used `ranged` parser to read the value.
             };
             Some(effect)
         };
@@ -302,7 +305,23 @@ fn effect<'i>(
 #[cfg(test)]
 mod test {
     use super::*;
+    use nom::error::VerboseError;
+    use nom::Err;
     use pretty_assertions::assert_eq;
+
+    fn ensure_parse<'i, O>(
+        parser: impl FnOnce(&'i [u8]) -> Result<O, Err<VerboseError<&'i [u8]>>>,
+        input: &'i [u8],
+    ) -> O {
+        match parser(input) {
+            Ok(res) => res,
+            Err(Err::Error(e)) | Err(Err::Failure(e)) => {
+                // TODO implement something like `nom::error::convert_error` for `&[u8]` input
+                panic!("parser failed\n{:x?}", e);
+            }
+            _ => unreachable!(),
+        }
+    }
 
     #[test]
     fn effect_alphabet() {
@@ -414,7 +433,8 @@ mod test {
             EffectCmd::MIDI(0xF1),
         ];
 
-        let module = module(DATA).unwrap();
+        let module = ensure_parse(module, DATA);
+
         let effects = module.patterns
             .into_iter().nth(0).unwrap()
             .rows.into_iter()

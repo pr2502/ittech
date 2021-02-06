@@ -26,7 +26,7 @@ where
 
 
 /// Consumes N bytes and returns the result as an array.
-pub fn byte_array<const N: usize>(input: &[u8]) -> IResult<&[u8], [u8; N]> {
+pub fn byte_array<'i, E: ParseError<&'i [u8]>, const N: usize>(input: &'i [u8]) -> IResult<&'i [u8], [u8; N], E> {
     let (rest, slice) = take(N)(input)?;
     let mut array = [0u8; N];
     array.copy_from_slice(slice);
@@ -64,15 +64,15 @@ where
     verify(f, move |val| range.contains(val))
 }
 
-pub fn offset_list<'a, O, E, F>(
+pub fn offset_list<'i, O, E, F>(
     mut f: F,
     offset_list: Vec<u32>,
-) -> impl FnMut(&'a [u8]) -> IResult<&'a [u8], Vec<O>, E>
+) -> impl FnMut(&'i [u8]) -> IResult<&'i [u8], Vec<O>, E>
 where
-    E: ParseError<&'a [u8]>,
-    F: Parser<&'a [u8], O, E>,
+    E: ParseError<&'i [u8]>,
+    F: Parser<&'i [u8], O, E>,
 {
-    move |input: &'a [u8]| {
+    move |input: &'i [u8]| {
         let mut output_list = Vec::with_capacity(offset_list.len());
         for &offset in &offset_list {
             let offset = offset as usize;
