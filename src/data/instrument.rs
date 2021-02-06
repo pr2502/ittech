@@ -1,6 +1,8 @@
 use super::{DOSFilename, Envelope, Name, Note, RangedU8, Sample};
 use bitflags::bitflags;
-
+use std::convert::TryFrom;
+use std::fmt::{self, Debug};
+use std::ops::Index;
 
 #[derive(Debug)]
 pub struct Instrument {
@@ -78,7 +80,7 @@ pub struct InstrumentHeader {
     // [(Key, Value)] just doesn't seem to make sense when every key from 0 to 119 must be present
     // exactly once anyway. it's understandable that some implementations might not sort it but i
     // don't expect
-    pub keyboard: Box<[(Note, Option<SampleId>); 120]>,
+    pub sample_map: SampleMap,
 
     /// Volume Envelope
     pub volume_envelope: Envelope,
@@ -90,7 +92,7 @@ pub struct InstrumentHeader {
     pub pitch_filter_envelope: Envelope,
 }
 
-pub type SampleId = RangedU8<0, 98>;
+ranged_u8_newtype!(SampleId, 0..=98);
 
 bitflags! {
     /// Move boolean flags out of values.
@@ -106,10 +108,49 @@ bitflags! {
     }
 }
 
+#[derive(Clone)]
+pub struct SampleMap {
+    pub(crate) map: [Option<SampleId>; 120],
+}
+
 
 #[allow(non_upper_case_globals)]
 impl InstrumentHeader {
     pub(crate) const dfp_ignorePanning: u8 = 0x80;
     pub(crate) const ifc_enableCutoff: u8 = 0x80;
     pub(crate) const ifr_enableResonance: u8 = 0x80;
+}
+
+impl Default for SampleMap {
+    fn default() -> SampleMap {
+        SampleMap {
+            map: [None; 120],
+        }
+    }
+}
+
+impl Debug for SampleMap {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_map()
+            .entries(
+                (0..120)
+                    .zip(self.map.iter())
+                    .filter_map(|(k, v)| v.map(|v| (Note::try_from(k).unwrap(), v)))
+            )
+            .finish()
+    }
+}
+
+impl Index<Note> for SampleMap {
+    type Output = Option<SampleId>;
+    fn index(&self, index: Note) -> &Self::Output {
+        &self.map[u8::from(index) as usize]
+    }
+}
+
+impl Index<&Note> for SampleMap {
+    type Output = Option<SampleId>;
+    fn index(&self, index: &Note) -> &Self::Output {
+        self.index(*index)
+    }
 }

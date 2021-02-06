@@ -3,8 +3,7 @@
 use anyhow::{Context, Result};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use ittech::parser;
-use ittech::{ActiveChannels, Channel, Command, Module, NoteCmd, Order, Sample};
-use std::ops::BitOr;
+use ittech::{Channel, Command, Module, Note, NoteCmd, Sample};
 use std::{env, fs, iter};
 
 const USAGE: &str = "usage: cargo run --example render -- <itmodule> <outputwav>";
@@ -39,18 +38,9 @@ fn main() -> Result<()> {
 }
 
 const SR: usize = 44_100;
-static EMPTY: Vec<Vec<Command>> = Vec::new();
 
-const A4: u8 = 57;
-const C5: u8 = 60;
-
-fn note_freq(note: u8) -> f32 {
-    let exp = ((note as f32) - (A4 as f32)) / 12.0;
-    440.0f32 * 2.0f32.powf(exp)
-}
-
-fn resample(sample: &Sample, note: u8) -> Box<dyn Iterator<Item=f32> + '_> {
-    let note_ratio = note_freq(note) / note_freq(C5);
+fn resample(sample: &Sample, note: Note) -> Box<dyn Iterator<Item=f32> + '_> {
+    let note_ratio = note.freq() / Note::C_5.freq();
     let sr_ratio = (SR as f32) / (sample.samplerate_c5 as f32);
     let incr = note_ratio / sr_ratio;
     let table = sample.data.as_ref().unwrap();
@@ -76,18 +66,11 @@ fn resample(sample: &Sample, note: u8) -> Box<dyn Iterator<Item=f32> + '_> {
 }
 
 fn render(module: Module) -> Result<Vec<f32>> {
-    let active_channels = module.patterns
-        .iter()
-        .map(|pat| pat.active_channels)
-        .fold(ActiveChannels::NONE, BitOr::bitor);
+    let active_channels = module.active_channels();
     let amp = 1.0 / (active_channels.count() as f32);
 
-    let total_rows = module.orders
-        .iter()
-        .map(|ord| match *ord {
-            Order::Index(idx) => module.patterns[idx as usize].rows.len(),
-            _ => 0,
-        })
+    let total_rows = module.ordered_patterns()
+        .map(|pat| pat.rows.len())
         .sum::<usize>();
 
     let samples_per_row = SR * 60 / 4 / (module.tempo.as_u8() as usize);
@@ -97,24 +80,18 @@ fn render(module: Module) -> Result<Vec<f32>> {
         .take(Channel::MAX as usize + 1)
         .collect::<Vec<_>>();
 
-    module.orders
-        .iter()
-        .flat_map(|ord| match *ord {
-            Order::Index(idx) => module.patterns[idx as usize].rows.iter(),
-            _ => EMPTY.iter(),
-        })
+    module.ordered_patterns()
+        .flat_map(|pat| pat.rows.iter())
         .zip((0..).step_by(samples_per_row))
         .for_each(|(row, offset)| {
             let buffer = &mut buffer[offset..][..samples_per_row];
             for Command { channel, note, instrument, .. } in row {
                 match (*note, instrument) {
                     (Some(NoteCmd::Play(note)), Some(instrument)) => {
-                        if let Some(instrument) = &module.instruments.get(instrument.as_u8() as usize) {
-                            if let Some((_, Some(sample))) = instrument.keyboard.iter().find(|(n, _)| *n == note) {
-                                if let Some(sample) = &module.samples.get(sample.as_u8() as usize) {
-                                    channels[channel.as_usize()] = Some(Box::new(resample(sample, note.into())));
-                                }
-                            }
+                        let instrument = &module[instrument];
+                        if let Some(sample) = instrument.sample_map[note] {
+                            let sample = &module[sample];
+                            channels[channel.as_usize()] = Some(Box::new(resample(sample, note.into())));
                         }
                     }
                     (Some(NoteCmd::Cut | NoteCmd::Fade), _) => {

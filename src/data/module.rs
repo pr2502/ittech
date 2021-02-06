@@ -1,4 +1,4 @@
-use super::{InstrumentHeader, Name, Pattern, RangedU8, Sample};
+use super::*;
 use bitflags::bitflags;
 
 
@@ -61,10 +61,12 @@ pub struct Module {
 
 #[derive(Debug)]
 pub enum Order {
-    Index(u8),
+    Index(PatternId),
     Separator,
     EndOfSong,
 }
+
+ranged_u8_newtype!(PatternId, 0..=199);
 
 bitflags! {
     pub struct ModuleFlags: u32 {
@@ -124,9 +126,62 @@ bitflags! {
     }
 }
 
+
 impl ModuleFlags {
     pub(crate) fn from_parts(flags: u16, special: u16) -> ModuleFlags {
         let bits = (flags as u32) | ((special as u32) << 16);
         ModuleFlags::from_bits_truncate(bits)
+    }
+}
+
+impl Get<SampleId> for Module {
+    type Output = Sample;
+    fn get(&self, index: SampleId) -> Option<&Self::Output> {
+        self.samples.as_slice().get(index.as_u8() as usize)
+    }
+}
+
+impl_index_from_get!(Module, SampleId);
+
+impl Get<InstrumentId> for Module {
+    type Output = InstrumentHeader;
+    fn get(&self, index: InstrumentId) -> Option<&Self::Output> {
+        self.instruments.as_slice().get(index.as_u8() as usize)
+    }
+}
+
+impl_index_from_get!(Module, InstrumentId);
+
+impl Get<PatternId> for Module {
+    type Output = Pattern;
+    fn get(&self, index: PatternId) -> Option<&Self::Output> {
+        self.patterns.as_slice().get(index.as_u8() as usize)
+    }
+}
+
+impl_index_from_get!(Module, PatternId);
+
+impl Module {
+    /// Returns an iterator over patterns as listed in the orders list.
+    ///
+    /// It can yield any pattern multiple times or not yield some patterns at all.
+    pub fn ordered_patterns(&self) -> impl Iterator<Item = &Pattern> + '_ {
+        self.orders
+            .iter()
+            .filter_map(move |ord| match ord {
+                Order::Index(idx) => self.get(idx),
+                _ => None,
+            })
+    }
+
+    /// Returns active channels when playing the module.
+    ///
+    /// Does not account for channels in patterns which are not present in the orders list.
+    pub fn active_channels(&self) -> ActiveChannels {
+        use std::ops::BitOr;
+
+        self.ordered_patterns()
+            .map(|pat| pat.active_channels)
+            .fold(ActiveChannels::empty(), BitOr::bitor)
     }
 }

@@ -5,6 +5,7 @@ use std::iter::FromIterator;
 use std::num::TryFromIntError;
 use std::ops::{BitOr, BitOrAssign};
 
+
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
 pub struct Channel(RangedU8<0, 63>);
 
@@ -15,7 +16,7 @@ impl Channel {
         self.0.as_u8() as usize
     }
 
-    pub fn from_u8_truncate(raw: u8) -> Channel {
+    pub(crate) fn from_u8_truncate(raw: u8) -> Channel {
         Channel((raw & 63).try_into().unwrap())
     }
 }
@@ -40,12 +41,18 @@ impl Debug for Channel {
 }
 
 
+/// Mask representing active channels in a particular pattern or module.
 #[derive(Clone, Copy)]
 pub struct ActiveChannels(u64);
 
 impl ActiveChannels {
-    pub const NONE: ActiveChannels = ActiveChannels(0);
-    pub const MAX: u8 = Channel::MAX + 1;
+    pub const fn all() -> ActiveChannels {
+        ActiveChannels(u64::MAX)
+    }
+
+    pub const fn empty() -> ActiveChannels {
+        ActiveChannels(0)
+    }
 
     pub fn iter(self) -> impl Iterator<Item=Channel> {
         (0..=Channel::MAX)

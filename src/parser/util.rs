@@ -1,10 +1,29 @@
 use nom::bytes::complete::take;
 use nom::combinator::verify;
-use nom::error::ParseError;
+use nom::error::{make_error, ErrorKind, ParseError};
 use nom::multi::count;
+use nom::Err::Error;
 use nom::{IResult, Parser};
-use std::convert::TryInto;
+use std::convert::{TryFrom, TryInto};
 use std::ops::RangeBounds;
+
+
+/// Helper trait for `.try_into().unwrap()` for cases where a panic is meant to be a bug.
+pub(crate) trait Cast<T> {
+    fn cast(self) -> T;
+}
+
+impl<F, T> Cast<T> for F
+where
+    T: TryFrom<F>,
+    <T as TryFrom<F>>::Error: std::fmt::Debug,
+{
+    #[track_caller]
+    fn cast(self) -> T {
+        self.try_into().unwrap()
+    }
+}
+
 
 /// Consumes N bytes and returns the result as an array.
 pub fn byte_array<const N: usize>(input: &[u8]) -> IResult<&[u8], [u8; N]> {
@@ -61,11 +80,35 @@ where
                 todo!()
             }
             if offset >= input.len() {
-                return Err(nom::Err::Error(nom::error::make_error(input, nom::error::ErrorKind::Eof)));
+                return Err(Error(make_error(input, ErrorKind::Eof)));
             }
             let (_, i) = f.parse(&input[offset..])?;
             output_list.push(i);
         }
         Ok((input, output_list))
+    }
+}
+
+pub fn scan_count<I, O, E, F, G, R>(
+    count: usize,
+    mut parse: F,
+    init: R,
+    fold: G,
+) -> impl FnMut(I) -> IResult<I, R, E>
+where
+    I: Clone + PartialEq,
+    F: Parser<I, O, E>,
+    G: Fn(&mut R, O),
+    E: ParseError<I>,
+    R: Clone,
+{
+    move |mut input: I| {
+        let mut acc = init.clone();
+        for _ in 0..count {
+            let (tail, value) = parse.parse(input.clone())?;
+            fold(&mut acc, value);
+            input = tail;
+        }
+        Ok((input, acc))
     }
 }
