@@ -1,4 +1,6 @@
+use crate::context;
 use crate::data::*;
+use crate::error::ContextError;
 use bitflags::bitflags;
 use nom::bytes::complete::{tag, take};
 use nom::combinator::{all_consuming, map};
@@ -17,7 +19,7 @@ mod util;
 
 
 /// Parse Impulse Tracker module file (.it)
-pub fn module<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> Result<Module, Err<E>> {
+pub fn module<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> Result<Module, Err<E>> {
     // Save the whole input for offset parsing.
     let whole_input = input;
 
@@ -125,7 +127,7 @@ pub fn module<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> Result<Module, Er
 }
 
 /// Parse Impulse Tracker instrument file (.iti)
-pub fn instrument<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> Result<Instrument, Err<E>> {
+pub fn instrument<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> Result<Instrument, Err<E>> {
     // Save the whole input for offset parsing.
     let whole_input = input;
 
@@ -135,7 +137,7 @@ pub fn instrument<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> Result<Instru
 }
 
 /// Parse Impulse Tracker sample file (.its)
-pub fn sample<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> Result<Sample, Err<E>> {
+pub fn sample<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> Result<Sample, Err<E>> {
     // Save the whole input for offset parsing.
     let whole_input = input;
 
@@ -143,7 +145,7 @@ pub fn sample<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> Result<Sample, Er
     todo!()
 }
 
-fn sample_data<'i, E: ParseError<&'i [u8]>>(header: &SampleHeader, whole_input: &'i [u8]) -> Result<Option<Vec<f32>>, Err<E>> {
+fn sample_data<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(header: &SampleHeader, whole_input: &'i [u8]) -> Result<Option<Vec<f32>>, Err<E>> {
     let flags = header.flags;
 
     if !flags.contains(SampleFlags::DATA_PRESENT) {
@@ -176,7 +178,7 @@ fn sample_data<'i, E: ParseError<&'i [u8]>>(header: &SampleHeader, whole_input: 
     }
 }
 
-fn order<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], Order, E> {
+fn order<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], Order, E> {
     let (input, byte) = le_u8(input)?;
     let order = match byte {
         0..=199 => Order::Index(byte.cast()),
@@ -191,17 +193,17 @@ fn order<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], Orde
     Ok((input, order))
 }
 
-fn name<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], Name, E> {
+fn name<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], Name, E> {
     let (input, bytes) = byte_array(input)?;
     Ok((input, Name { bytes }))
 }
 
-fn dosfilename<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], DOSFilename, E> {
+fn dosfilename<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], DOSFilename, E> {
     let (input, bytes) = byte_array(input)?;
     Ok((input, DOSFilename { bytes }))
 }
 
-fn instrument_header<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], InstrumentHeader, E> {
+fn instrument_header<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], InstrumentHeader, E> {
     let (input, _) = tag(b"IMPI")(input)?;
     let (input, filename) = dosfilename(input)?;
     let (input, nna) = le_u8(input)?;
@@ -277,7 +279,7 @@ fn instrument_header<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'
     ))
 }
 
-fn sample_map<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], SampleMap, E> {
+fn sample_map<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], SampleMap, E> {
     scan_count(
         120,
         tuple((ranged(le_u8, 0..=119), ranged(le_u8, 0..=99))),
@@ -291,9 +293,9 @@ fn sample_map<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8],
     )(input)
 }
 
-fn envelope<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], Envelope, E> {
+fn envelope<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], Envelope, E> {
     let (input, flags) = le_u8(input)?;
-    let (input, num) = le_u8(input)?;
+    let (input, num) = context!(ranged(le_u8, 0..=25), "reading envelope size")(input)?;
     let (input, lpb) = le_u8(input)?;
     let (input, lpe) = le_u8(input)?;
     let (input, slb) = le_u8(input)?;
@@ -323,13 +325,13 @@ fn envelope<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], E
     ))
 }
 
-fn node<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], Node, E> {
+fn node<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], Node, E> {
     let (input, value) = le_i8(input)?;
     let (input, tick) = le_u16(input)?;
     Ok((input, Node { value, tick }))
 }
 
-fn sample_header<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], SampleHeader, E> {
+fn sample_header<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], SampleHeader, E> {
     let (input, _) = tag(b"IMPS")(input)?;
     let (input, filename) = dosfilename(input)?;
     let (input, gvl) = le_u8(input)?;

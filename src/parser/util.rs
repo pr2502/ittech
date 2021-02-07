@@ -1,3 +1,5 @@
+use crate::context;
+use crate::error::ContextError;
 use nom::bytes::complete::take;
 use nom::combinator::verify;
 use nom::error::{make_error, ErrorKind, ParseError};
@@ -5,6 +7,7 @@ use nom::multi::count;
 use nom::Err::Error;
 use nom::{IResult, Parser};
 use std::convert::{TryFrom, TryInto};
+use std::fmt::Debug;
 use std::ops::RangeBounds;
 
 
@@ -56,12 +59,29 @@ pub fn ranged<I, O, E, F, R>(
 ) -> impl FnMut(I) -> IResult<I, O, E>
 where
     I: Clone,
-    O: PartialOrd<O>,
-    E: ParseError<I>,
+    O: PartialOrd<O> + Debug,
+    E: ParseError<I> + ContextError<I>,
     F: Parser<I, O, E>,
-    R: RangeBounds<O>,
+    R: RangeBounds<O> + Clone,
 {
-    verify(f, move |val| range.contains(val))
+    use std::ops::Bound;
+
+    let range2 = range.clone();
+
+    context!(
+        verify(f, move |val| range.contains(val)),
+        "value must be in range {}..{}",
+        match range2.start_bound() {
+            Bound::Unbounded => String::new(),
+            Bound::Included(b) => format!("{:#x?}", b),
+            Bound::Excluded(_) => unreachable!(), // doesn't make sense for starting bound
+        },
+        match range2.end_bound() {
+            Bound::Unbounded => String::new(),
+            Bound::Included(b) => format!("={:#x?}", b),
+            Bound::Excluded(b) => format!("{:#x?}", b),
+        },
+    )
 }
 
 pub fn offset_list<'i, O, E, F>(
