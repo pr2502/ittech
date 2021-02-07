@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use hound::{SampleFormat, WavSpec, WavWriter};
+use ittech::error::VerboseError;
 use ittech::parser;
 use ittech::{Channel, Command, Module, Note, NoteCmd, Sample};
 use std::{env, fs, iter};
@@ -16,7 +17,7 @@ fn main() -> Result<()> {
         .with_context(|| format!("failed to read file {}", &inpname))?;
     // leaking because we need `data` to be able to leave main on error,
     //   this is just an example, don't do this in real programs
-    let module = parser::module::<nom::error::VerboseError<&[u8]>>(Box::leak(data.into_boxed_slice()))
+    let module = parser::module::<VerboseError<_>>(Box::leak(data.into_boxed_slice()))
         .context("failed to parse data")?;
 
     let buffer = render(module).context("failed to render file")?;

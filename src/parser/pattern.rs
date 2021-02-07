@@ -1,4 +1,5 @@
 use super::*;
+use crate::{bail, context};
 
 
 bitflags! {
@@ -6,11 +7,11 @@ bitflags! {
         const READ_NOTE = 1 << 0;
         const READ_INSTRUMENT = 1 << 1;
         const READ_VOLUME = 1 << 2;
-        const READ_COMMAND = 1 << 3;
+        const READ_EFFECT = 1 << 3;
         const LAST_NOTE = 1 << 4;
         const LAST_INSTRUMENT = 1 << 5;
         const LAST_VOLUME = 1 << 6;
-        const LAST_COMMAND = 1 << 7;
+        const LAST_EFFECT = 1 << 7;
     }
 }
 
@@ -41,7 +42,10 @@ impl Default for State {
 }
 
 
-pub(super) fn pattern<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], Pattern, E> {
+pub(super) fn pattern<'i, E>(input: &'i [u8]) -> IResult<&'i [u8], Pattern, E>
+where
+    E: ParseError<&'i [u8]> + ContextError<&'i [u8]>,
+{
     let (input, length) = le_u16(input)?;
     let (input, rows) = le_u16(input)?;
     let (input, _padding) = take(4usize)(input)?;
@@ -49,57 +53,84 @@ pub(super) fn pattern<'i, E: ParseError<&'i [u8]>>(input: &'i [u8]) -> IResult<&
 
     let mut active_channels = ActiveChannels::empty();
 
-    let (_empty, rows) = all_consuming(count(
-        map(
-            many_till(command(&mut State::default()), tag(b"\0")),
-            |(mut commands, _)| {
-                commands.sort_unstable_by_key(|cmd| cmd.channel);
-                active_channels |= commands.iter().map(|cmd| cmd.channel).collect();
-                commands
-            },
-        ),
-        rows as usize,
-    ))(input)?;
+    let (_empty, rows) = context!(
+        all_consuming(count(
+            map(
+                many_till(command(State::default()), tag(b"\0")),
+                |(mut commands, _)| {
+                    commands.sort_unstable_by_key(|cmd| cmd.channel);
+                    active_channels |= commands.iter().map(|cmd| cmd.channel).collect();
+                    commands
+                },
+            ),
+            rows as usize,
+        )),
+        "in pattern",
+    )(input)?;
 
-    Ok((rest, Pattern { active_channels, rows }))
+    Ok((
+        rest,
+        Pattern {
+            active_channels,
+            rows,
+        },
+    ))
 }
 
-fn command<'i, 's, E: ParseError<&'i [u8]>>(
-    state: &'s mut State
-) -> impl FnMut(&'i [u8]) -> IResult<&'i [u8], Command, E> + 's
+fn command<'i, E>(mut state: State) -> impl FnMut(&'i [u8]) -> IResult<&'i [u8], Command, E>
 where
-    'i: 's,
+    E: ParseError<&'i [u8]> + ContextError<&'i [u8]>,
 {
-    move |input| {
-        let (input, channel_var) = le_u8(input)?;
+    context!(
+        move |input| {
+            let (input, channel_var) = context!(le_u8, "reading channel")(input)?;
 
-        assert!(
-            channel_var >= 1,
-            "this is a bug: 0 marks end of row and should be handled by a different parser",
-        );
+            assert!(
+                channel_var >= 1,
+                "this is a bug: 0 marks end of row and should be handled by a different parser",
+            );
 
-        let channel_mask = ChannelMask::from_bits_truncate(channel_var);
-        let channel = Channel::from_u8_truncate(channel_var - 1); // Can't underflow.
+            let channel_mask = ChannelMask::from_bits_truncate(channel_var);
+            let channel = Channel::from_u8_truncate(channel_var - 1); // Can't underflow.
 
-        let (input, mask_var) = mask_var(state, channel, channel_mask, input)?;
+            let (input, mask_var) = mask_var(&mut state, channel, channel_mask, input)?;
 
-        let (input, note) = note(state, channel, mask_var, input)?;
-        let (input, instrument) = instrument(state, channel, mask_var, input)?;
-        let (input, volume) = volume(state, channel, mask_var, input)?;
-        let (input, effect) = effect(state, channel, mask_var, input)?;
+            let (input, (note, instrument, volume, effect)) = context!(
+                |input| {
+                    let (input, note) = note(&mut state, channel, mask_var, input)?;
+                    let (input, instrument) = instrument(&mut state, channel, mask_var, input)?;
+                    let (input, volume) = volume(&mut state, channel, mask_var, input)?;
+                    let (input, effect) = effect(&mut state, channel, mask_var, input)?;
+                    Ok((input, (note, instrument, volume, effect)))
+                },
+                "reading command with mask 0x{:02x} ({:?})",
+                mask_var.bits(),
+                mask_var,
+            )(input)?;
 
-        Ok((input, Command { channel, note, instrument, volume, effect }))
-    }
+            Ok((
+                input,
+                Command {
+                    channel,
+                    note,
+                    instrument,
+                    volume,
+                    effect,
+                },
+            ))
+        },
+        "in command",
+    )
 }
 
-fn mask_var<'i, E: ParseError<&'i [u8]>>(
+fn mask_var<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(
     state: &mut State,
     channel: Channel,
     channel_mask: ChannelMask,
     input: &'i [u8],
 ) -> IResult<&'i [u8], Mask, E> {
     if channel_mask.contains(ChannelMask::LAST_MASKVAR) {
-        let (input, mask_var) = le_u8(input)?;
+        let (input, mask_var) = context!(le_u8, "reading mask var")(input)?;
         let mask_var = Mask::from_bits_truncate(mask_var);
         state.last_maskvar[channel.as_usize()] = mask_var;
         Ok((input, mask_var))
@@ -108,14 +139,14 @@ fn mask_var<'i, E: ParseError<&'i [u8]>>(
     }
 }
 
-fn note<'i, E: ParseError<&'i [u8]>>(
+fn note<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(
     state: &mut State,
     channel: Channel,
     mask_var: Mask,
     input: &'i [u8],
 ) -> IResult<&'i [u8], Option<NoteCmd>, E> {
     if mask_var.contains(Mask::READ_NOTE) && !mask_var.contains(Mask::LAST_NOTE) {
-        let (input, note_var) = le_u8(input)?;
+        let (input, note_var) = context!(le_u8, "reading note")(input)?;
         let note = match note_var {
             0 ..= 119 => NoteCmd::Play(note_var.try_into().unwrap()),
             255 => NoteCmd::Off,
@@ -131,14 +162,14 @@ fn note<'i, E: ParseError<&'i [u8]>>(
     }
 }
 
-fn instrument<'i, E: ParseError<&'i [u8]>>(
+fn instrument<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(
     state: &mut State,
     channel: Channel,
     mask_var: Mask,
     input: &'i [u8],
 ) -> IResult<&'i [u8], Option<InstrumentId>, E> {
     if mask_var.contains(Mask::READ_INSTRUMENT) && !mask_var.contains(Mask::LAST_INSTRUMENT) {
-        let (input, instrument) = ranged(le_u8, 0..=99)(input)?;
+        let (input, instrument) = context!(ranged(le_u8, 0..=99), "reading instrument id")(input)?;
         let instrument = match instrument {
             0 => None,
             1 ..= 99 => Some((instrument - 1).try_into().unwrap()),
@@ -153,7 +184,7 @@ fn instrument<'i, E: ParseError<&'i [u8]>>(
     }
 }
 
-fn volume<'i, E: ParseError<&'i [u8]>>(
+fn volume<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(
     state: &mut State,
     channel: Channel,
     mask_var: Mask,
@@ -174,7 +205,7 @@ fn volume<'i, E: ParseError<&'i [u8]>>(
             203 ..= 212 => VolumeCmd::Vibrato((byte - 203).cast()),
             _ => {
                 // There is a gap in between the intervals so we can't simply use `ranged`.
-                return Err(Err::Error(E::from_error_kind(input, ErrorKind::Verify)));
+                bail!(input, "value is not a valid volume");
             },
         };
         state.last_volume[channel.as_usize()] = Some(volume);
@@ -186,17 +217,21 @@ fn volume<'i, E: ParseError<&'i [u8]>>(
     }
 }
 
-fn effect<'i, E: ParseError<&'i [u8]>>(
+fn effect<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(
     state: &mut State,
     channel: Channel,
     mask_var: Mask,
     input: &'i [u8],
 ) -> IResult<&'i [u8], Option<EffectCmd>, E> {
-    if mask_var.contains(Mask::READ_COMMAND) && !mask_var.contains(Mask::LAST_COMMAND) {
+    if mask_var.contains(Mask::READ_EFFECT) && !mask_var.contains(Mask::LAST_EFFECT) {
         // We're using effects definition from OpenMPT but we're trying to adhere to ITTECH.TXT so
         // we only parse the first 31. In the future we might want to support the `itEx` format
         // from OpenMPT instead.
-        let (input, (effect, param)) = tuple((ranged(le_u8, 0..=0x1A), le_u8))(input)?;
+        let (input, (effect, param)) = tuple((
+            context!(ranged(le_u8, 0..=0x1A), "reading effect number"),
+            context!(le_u8, "reading effect parameter"),
+        ))(input)?;
+
         let effect = if effect == 0x00 {
             None
         } else {
@@ -295,7 +330,7 @@ fn effect<'i, E: ParseError<&'i [u8]>>(
         };
         state.last_effect[channel.as_usize()] = effect;
         Ok((input, effect))
-    } else if mask_var.contains(Mask::LAST_COMMAND) {
+    } else if mask_var.contains(Mask::LAST_EFFECT) {
         Ok((input, state.last_effect[channel.as_usize()]))
     } else {
         Ok((input, None))
@@ -305,7 +340,7 @@ fn effect<'i, E: ParseError<&'i [u8]>>(
 #[cfg(test)]
 mod test {
     use super::*;
-    use nom::error::VerboseError;
+    use crate::error::{VerboseError, convert_error};
     use nom::Err;
     use pretty_assertions::assert_eq;
 
@@ -316,8 +351,7 @@ mod test {
         match parser(input) {
             Ok(res) => res,
             Err(Err::Error(e)) | Err(Err::Failure(e)) => {
-                // TODO implement something like `nom::error::convert_error` for `&[u8]` input
-                panic!("parser failed\n{:x?}", e);
+                panic!("parser failed\n\n{}", convert_error(input, e));
             }
             _ => unreachable!(),
         }

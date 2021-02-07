@@ -16,6 +16,7 @@
 #[doc(include = "../ITTECH.txt")]
 pub mod ittech_txt {}
 
+pub mod error;
 
 mod data;
 pub use data::*;
