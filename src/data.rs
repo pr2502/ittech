@@ -1,6 +1,9 @@
 //! Data type definitions.
 
 
+pub(crate) use bitflags::bitflags;
+
+
 macro_rules! ranged_u8_newtype {
     ( $name: ident, $range: expr ) => {
         #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
@@ -44,6 +47,11 @@ macro_rules! ranged_u8_newtype {
 }
 
 
+ranged_u8_newtype!(InstrumentId, 0..=98);
+ranged_u8_newtype!(PatternId, 0..=199);
+ranged_u8_newtype!(SampleId, 0..=98);
+
+
 pub trait Get<I> {
     type Output;
     fn get(&self, index: I) -> Option<&Self::Output>;
@@ -82,22 +90,17 @@ macro_rules! impl_index_from_get {
 
 
 mod channel;
-pub use channel::*;
-
 mod envelope;
-pub use envelope::*;
-
 mod instrument;
-pub use instrument::*;
-
 mod module;
-pub use module::*;
-
 mod pattern;
-pub use pattern::*;
-
 mod sample;
-pub use sample::*;
-
 mod util;
+
+pub use channel::*;
+pub use envelope::*;
+pub use instrument::*;
+pub use module::*;
+pub use pattern::*;
+pub use sample::*;
 pub use util::*;

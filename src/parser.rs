@@ -1,4 +1,3 @@
-use crate::context;
 use crate::data::*;
 use crate::error::ContextError;
 use bitflags::bitflags;
@@ -11,19 +10,110 @@ use nom::sequence::tuple;
 use nom::{Err, IResult};
 use pattern::pattern;
 use std::convert::{TryFrom, TryInto};
-use util::*;
 
 
 mod pattern;
 mod util;
 
+use util::*;
+
 
 /// Parse Impulse Tracker module file (.it)
-pub fn module<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> Result<Module, Err<E>> {
-    // Save the whole input for offset parsing.
-    let whole_input = input;
+pub fn module<'i, E>(input: &'i [u8]) -> Result<Module, Err<E>>
+where
+    E: ParseError<&'i [u8]> + ContextError<&'i [u8]>,
+{
+    let (_, header) = module_header(input)?;
 
-    // Parse header.
+    // Offsets are relative to the start of the file, use the whole input every time.
+    let (_, instrument_headers) = offset_list(instrument_header, header.instrument_offsets)(input)?;
+    let (_, sample_headers) = offset_list(sample_header, header.sample_offsets)(input)?;
+    let patterns = {
+        let mut patterns = Vec::with_capacity(header.pattern_offsets.len());
+        for offset in header.pattern_offsets.into_iter().map(|o| o as usize) {
+            // Pattern parsing is inlined from `offset_list` because we need to handle the special
+            // case of offset 0 here.
+            if offset == 0 {
+                patterns.push(Pattern {
+                    active_channels: ActiveChannels::empty(),
+                    rows: vec![Row::empty(); 64]
+                });
+                continue
+            }
+            if offset >= input.len() {
+                return Err(Err::Error(E::from_error_kind(input, ErrorKind::Eof)));
+            }
+            let (_, pat) = pattern(&input[offset..])?;
+            patterns.push(pat);
+        }
+        patterns
+    };
+
+    let samples = sample_headers.into_iter()
+        .map(|header| sample_data(header, input))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let message = {
+        let offset = header.message_offset as usize;
+        if offset == 0 || offset >= input.len() {
+            String::new()
+        } else {
+            let (_, bytes) = take(header.message_length as usize)(input)?;
+            String::from_utf8_lossy(bytes)
+                .to_string()
+        }
+    };
+
+    Ok(Module {
+        name: header.name,
+        highlight: header.highlight,
+        made_with_version: header.made_with_version,
+        compatible_with_version: header.compatible_with_version,
+        flags: header.flags,
+        global_volume: header.global_volume,
+        sample_volume: header.sample_volume,
+        speed: header.speed,
+        tempo: header.tempo,
+        pan_separation: header.pan_separation,
+        pitch_wheel_depth: header.pitch_wheel_depth,
+        message,
+        orders: header.orders,
+        init_channel_panning: header.init_channel_panning,
+        init_channel_volume: header.init_channel_volume,
+        instruments: instrument_headers,
+        samples,
+        patterns,
+    })
+}
+
+/// Parse Impulse Tracker instrument file (.iti)
+pub fn instrument<'i, E>(input: &'i [u8]) -> Result<Instrument, Err<E>>
+where
+    E: ParseError<&'i [u8]> + ContextError<&'i [u8]>,
+{
+    let (input2, header) = instrument_header(input)?;
+    let (_, sample_headers) = count(sample_header, header.number_of_samples as usize)(input2)?;
+    let samples = sample_headers.into_iter()
+        .map(|header| sample_data(header, input))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Instrument { header, samples })
+}
+
+/// Parse Impulse Tracker sample file (.its)
+pub fn sample<'i, E>(input: &'i [u8]) -> Result<Sample, Err<E>>
+where
+    E: ParseError<&'i [u8]> + ContextError<&'i [u8]>,
+{
+    let (_, header) = sample_header(input)?;
+    sample_data(header, input)
+}
+
+
+fn module_header<'i, E>(input: &'i [u8]) -> IResult<&'i [u8], ModuleHeader, E>
+where
+    E: ParseError<&'i [u8]> + ContextError<&'i [u8]>,
+{
+    // Parse static parts.
     let (input, _) = tag(b"IMPM")(input)?;
     let (input, songname) = name(input)?;
     let (input, highlight_minor) = le_u8(input)?;
@@ -54,128 +144,32 @@ pub fn module<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [
     let (input, sam_offsets) = count(le_u32, smpnum as usize)(input)?;
     let (_rest, pat_offsets) = count(le_u32, patnum as usize)(input)?;
 
-    // Offsets are relative to the start of the file, use the whole input every time.
-    let (_, instrument_headers) = offset_list(instrument_header, ins_offsets)(whole_input)?;
-    let (_, sample_headers) = offset_list(sample_header, sam_offsets)(whole_input)?;
-    let patterns = {
-        let mut patterns = Vec::with_capacity(pat_offsets.len());
-        for offset in pat_offsets.into_iter().map(|o| o as usize) {
-            // Pattern parsing is inlined from `offset_list` because we need to handle the special
-            // case of offset 0 here.
-            if offset == 0 {
-                patterns.push(Pattern {
-                    active_channels: ActiveChannels::empty(),
-                    rows: vec![Vec::new(); 64]
-                });
-                continue
-            }
-            if offset >= input.len() {
-                return Err(Err::Error(E::from_error_kind(input, ErrorKind::Eof)));
-            }
-            let (_, pat) = pattern(&whole_input[offset..])?;
-            patterns.push(pat);
-        }
-        patterns
-    };
-
-    let samples = sample_headers.into_iter()
-        .map(|header| {
-            let data = sample_data(&header, whole_input)?;
-            Ok(Sample {
-                name: header.name,
-                filename: header.filename,
-                do_loop: header.flags.contains(SampleFlags::LOOP),
-                samplerate_c5: header.samplerate_c5,
-                data,
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
     let flags = ModuleFlags::from_parts(flags, special);
 
-    let message = {
-        let offset = msgoffset as usize;
-        if offset == 0 || offset >= whole_input.len() {
-            String::new()
-        } else {
-            let (_, bytes) = take(msglength as usize)(whole_input)?;
-            String::from_utf8_lossy(bytes)
-                .to_string()
-        }
-    };
-
-    Ok(Module {
-        name: songname,
-        highlight: (highlight_major, highlight_minor),
-        made_with_version: cwtv,
-        compatible_with_version: cmwt,
-        flags,
-        global_volume: globalvol.try_into().unwrap(),
-        sample_volume: mv.try_into().unwrap(),
-        speed: speed.try_into().unwrap(),
-        tempo: tempo.try_into().unwrap(),
-        pan_separation: sep.try_into().unwrap(),
-        pitch_wheel_depth: pwd,
-        message,
-        orders,
-        init_channel_panning: chnpan,
-        init_channel_volume: chnvol,
-        instruments: instrument_headers,
-        samples,
-        patterns,
-    })
-}
-
-/// Parse Impulse Tracker instrument file (.iti)
-pub fn instrument<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> Result<Instrument, Err<E>> {
-    // Save the whole input for offset parsing.
-    let whole_input = input;
-
-    let (input, header) = instrument_header(whole_input)?;
-    let (_, _sample_headers) = count(sample_header, header.number_of_samples as usize)(input)?;
-    todo!()
-}
-
-/// Parse Impulse Tracker sample file (.its)
-pub fn sample<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> Result<Sample, Err<E>> {
-    // Save the whole input for offset parsing.
-    let whole_input = input;
-
-    let (_, _header) = sample_header(whole_input)?;
-    todo!()
-}
-
-fn sample_data<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(header: &SampleHeader, whole_input: &'i [u8]) -> Result<Option<Vec<f32>>, Err<E>> {
-    let flags = header.flags;
-
-    if !flags.contains(SampleFlags::DATA_PRESENT) {
-        Ok(None)
-    } else {
-        assert!(flags.contains(SampleFlags::DATA_SIGNED), "only signed samples are supported");
-        assert!(!flags.contains(SampleFlags::STEREO), "only mono samples supported");
-
-        assert!(!flags.contains(SampleFlags::COMPRESSED), "sample compression is not supported");
-        assert!(!flags.contains(SampleFlags::OPL_INSTRUMENT), "OPL instrument is not supported");
-        assert!(!flags.contains(SampleFlags::EXTERNAL_SAMPLE), "external samples are not supported");
-        assert!(!flags.contains(SampleFlags::ADPCM_SAMPLE), "MODPlugin :(");
-        assert!(!flags.contains(SampleFlags::DELTA), "delta samples are not supported");
-        assert!(!flags.contains(SampleFlags::PTM8_TO_16), "PTM loader is not supported");
-
-        let offset = header.data_offset as usize;
-        let length = header.data_length as usize;
-        let input = &whole_input[offset..];
-
-        let (_, data) = match (
-            flags.contains(SampleFlags::DATA_16BIT),
-            flags.contains(SampleFlags::DATA_BIG_ENDIAN),
-        ) {
-            (true, true) => count(map(be_i16, |s| f32::from(s) / f32::from(i16::MAX)), length)(input)?,
-            (true, false) => count(map(le_i16, |s| f32::from(s) / f32::from(i16::MAX)), length)(input)?,
-            (false, _) => count(map(le_i8, |s| f32::from(s) / f32::from(i8::MAX)), length)(input)?,
-        };
-
-        Ok(Some(data))
-    }
+    Ok((
+        input,
+        ModuleHeader {
+            name: songname,
+            highlight: (highlight_major, highlight_minor),
+            made_with_version: cwtv,
+            compatible_with_version: cmwt,
+            flags,
+            global_volume: globalvol.try_into().unwrap(),
+            sample_volume: mv.try_into().unwrap(),
+            speed: speed.try_into().unwrap(),
+            tempo: tempo.try_into().unwrap(),
+            pan_separation: sep.try_into().unwrap(),
+            pitch_wheel_depth: pwd,
+            message_length: msglength,
+            message_offset: msgoffset,
+            init_channel_panning: chnpan,
+            init_channel_volume: chnvol,
+            orders,
+            instrument_offsets: ins_offsets,
+            sample_offsets: sam_offsets,
+            pattern_offsets: pat_offsets,
+        },
+    ))
 }
 
 fn order<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], Order, E> {
@@ -285,8 +279,8 @@ fn sample_map<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [
         tuple((ranged(le_u8, 0..=119), ranged(le_u8, 0..=99))),
         SampleMap::default(),
         |sm: &mut SampleMap, (note, sample)| {
-            if sample >= 1 {
-                let sample = SampleId::try_from(sample).unwrap();
+            if sample > 0 {
+                let sample = SampleId::try_from(sample - 1).unwrap();
                 sm.map[note as usize] = Some(sample);
             }
         },
@@ -306,20 +300,18 @@ fn envelope<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8
     let flags = EnvelopeFlags::from_bits_truncate(flags);
     let data: [_; 25] = data;
     assert!(num <= 25);
-    assert!(lpb <= 25);
-    assert!(lpe <= 25 && lpb <= lpe);
-    assert!(slb <= 25);
-    assert!(sle <= 25 && slb <= sle);
+    assert!(lpb <= lpe);
+    assert!(lpe < num);
+    assert!(slb <= sle);
+    assert!(sle < num);
     let nodes = Vec::from(&data[..(num as usize)]);
 
     Ok((
         input,
         Envelope {
             flags,
-            loop_start: lpb,
-            loop_end: lpe,
-            sustain_loop_start: slb,
-            sustain_loop_end: sle,
+            loop_: EnvelopeLoop { start: lpb, end: lpe },
+            sustain_loop: EnvelopeLoop { start: slb, end: sle },
             nodes,
         },
     ))
@@ -331,7 +323,10 @@ fn node<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -
     Ok((input, Node { value, tick }))
 }
 
-fn sample_header<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], SampleHeader, E> {
+fn sample_header<'i, E>(input: &'i [u8]) -> IResult<&'i [u8], SampleHeader, E>
+where
+    E: ParseError<&'i [u8]> + ContextError<&'i [u8]>,
+{
     let (input, _) = tag(b"IMPS")(input)?;
     let (input, filename) = dosfilename(input)?;
     let (input, gvl) = le_u8(input)?;
@@ -339,6 +334,9 @@ fn sample_header<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'
     let (input, vol) = le_u8(input)?;
     let (input, name) = name(input)?;
     let (input, cvt) = le_u8(input)?;
+
+    let flags = SampleFlags::from_parts(flags, cvt);
+
     let (input, dfp) = le_u8(input)?;
     let (input, length) = le_u32(input)?;
     let (input, loopbegin) = le_u32(input)?;
@@ -351,26 +349,104 @@ fn sample_header<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'
     let (input, vid) = le_u8(input)?;
     let (input, vir) = le_u8(input)?;
     let (input, vit) = le_u8(input)?;
+
+    let loop_ = if flags.contains(SampleFlags::LOOP) {
+        assert!(loopbegin < loopend);
+        assert!(loopend <= length);
+        Some(SampleLoop {
+            start: loopbegin,
+            end: loopend,
+            bidi: flags.contains(SampleFlags::BIDI_LOOP),
+        })
+    } else {
+        None
+    };
+
+    let sustain_loop = if flags.contains(SampleFlags::SUSTAIN) {
+        assert!(susloopbegin < susloopend);
+        assert!(susloopend <= length);
+        Some(SampleLoop {
+            start: susloopbegin,
+            end: susloopend,
+            bidi: flags.contains(SampleFlags::BIDI_SUSTAIN),
+        })
+    } else {
+        None
+    };
+
     Ok((
         input,
         SampleHeader {
             name,
             filename,
-            flags: SampleFlags::from_parts(flags, cvt),
             global_volume: gvl,
             default_volume: vol,
-            sample_panning: dfp,
-            loop_start: loopbegin,
-            loop_end: loopend,
+            default_panning: dfp,
+            loop_,
+            sustain_loop,
             samplerate_c5: c5speed,
-            sustain_loop_start: susloopbegin,
-            sustain_loop_end: susloopend,
-            data_offset: samplepointer,
-            data_length: length,
             vibrato_speed: vis,
             vibrato_depth: vid,
             vibrato_rate: vir,
             vibrato_type: vit,
+
+            flags,
+            data_offset: samplepointer,
+            data_length: length,
         },
     ))
+}
+
+fn sample_data<'i, E>(header: SampleHeader, input: &'i [u8]) -> Result<Sample, Err<E>>
+where
+    E: ParseError<&'i [u8]> + ContextError<&'i [u8]>,
+{
+    let flags = header.flags;
+
+    let data = if !flags.contains(SampleFlags::DATA_PRESENT) {
+        None
+    } else {
+        // TODO add support for more sample formats
+
+        assert!(flags.contains(SampleFlags::DATA_SIGNED), "only signed samples are supported");
+        assert!(!flags.contains(SampleFlags::STEREO), "only mono samples supported");
+
+        assert!(!flags.contains(SampleFlags::COMPRESSED), "sample compression is not supported");
+        assert!(!flags.contains(SampleFlags::OPL_INSTRUMENT), "OPL instrument is not supported");
+        assert!(!flags.contains(SampleFlags::EXTERNAL_SAMPLE), "external samples are not supported");
+        assert!(!flags.contains(SampleFlags::ADPCM_SAMPLE), "MODPlugin :(");
+        assert!(!flags.contains(SampleFlags::DELTA), "delta samples are not supported");
+        assert!(!flags.contains(SampleFlags::PTM8_TO_16), "PTM loader is not supported");
+
+        let offset = header.data_offset as usize;
+        let length = header.data_length as usize;
+        let input = &input[offset..];
+
+        let (_, data) = match (
+            flags.contains(SampleFlags::DATA_16BIT),
+            flags.contains(SampleFlags::DATA_BIG_ENDIAN),
+        ) {
+            (true, true) => count(map(be_i16, |s| f32::from(s) / f32::from(i16::MAX)), length)(input)?,
+            (true, false) => count(map(le_i16, |s| f32::from(s) / f32::from(i16::MAX)), length)(input)?,
+            (false, _) => count(map(le_i8, |s| f32::from(s) / f32::from(i8::MAX)), length)(input)?,
+        };
+
+        Some(data)
+    };
+
+    Ok(Sample {
+        name: header.name,
+        filename: header.filename,
+        global_volume: header.global_volume,
+        default_volume: header.default_volume,
+        default_panning: header.default_panning,
+        loop_: header.loop_,
+        sustain_loop: header.sustain_loop,
+        samplerate_c5: header.samplerate_c5,
+        vibrato_speed: header.vibrato_speed,
+        vibrato_depth: header.vibrato_depth,
+        vibrato_rate: header.vibrato_rate,
+        vibrato_type: header.vibrato_type,
+        data,
+    })
 }

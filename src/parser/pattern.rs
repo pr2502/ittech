@@ -1,5 +1,4 @@
 use super::*;
-use crate::{bail, context};
 
 
 bitflags! {
@@ -17,7 +16,11 @@ bitflags! {
 
 bitflags! {
     struct ChannelMask: u8 {
+        /// Top bit
         const LAST_MASKVAR = 1 << 7;
+
+        /// All bits but the top bit
+        const CHANNEL_INDEX = !ChannelMask::LAST_MASKVAR.bits();
     }
 }
 
@@ -57,10 +60,9 @@ where
         all_consuming(count(
             map(
                 many_till(command(State::default()), tag(b"\0")),
-                |(mut commands, _)| {
-                    commands.sort_unstable_by_key(|cmd| cmd.channel);
-                    active_channels |= commands.iter().map(|cmd| cmd.channel).collect();
-                    commands
+                |(commands, _)| {
+                    active_channels |= commands.iter().map(|(chan, _)| *chan).collect();
+                    Row::from_vec(commands)
                 },
             ),
             rows as usize,
@@ -77,21 +79,32 @@ where
     ))
 }
 
-fn command<'i, E>(mut state: State) -> impl FnMut(&'i [u8]) -> IResult<&'i [u8], Command, E>
+fn command<'i, E>(mut state: State) -> impl FnMut(&'i [u8]) -> IResult<&'i [u8], (Channel, Command), E>
 where
     E: ParseError<&'i [u8]> + ContextError<&'i [u8]>,
 {
     context!(
-        move |input| {
-            let (input, channel_var) = context!(le_u8, "reading channel")(input)?;
+        move |input: &'i [u8]| {
+            let (input, (channel_mask, channel)) = context!(
+                |input| {
+                    let (input, channel_var) = le_u8(input)?;
 
-            assert!(
-                channel_var >= 1,
-                "this is a bug: 0 marks end of row and should be handled by a different parser",
-            );
+                    assert!(
+                        channel_var != 0,
+                        "this is a bug: 0 marks end of row and should be handled by a different parser",
+                    );
 
-            let channel_mask = ChannelMask::from_bits_truncate(channel_var);
-            let channel = Channel::from_u8_truncate(channel_var - 1); // Can't underflow.
+                    let channel_mask = ChannelMask::from_bits_truncate(channel_var);
+                    let channel_num = channel_var & ChannelMask::CHANNEL_INDEX.bits();
+                    if !(1..=64).contains(&channel_num) {
+                        bail!(input, "value is out of range 1..=64");
+                    }
+                    let channel = Channel::from_u8_index(channel_num - 1);
+
+                    Ok((input, (channel_mask, channel)))
+                },
+                "reading channel",
+            )(input)?;
 
             let (input, mask_var) = mask_var(&mut state, channel, channel_mask, input)?;
 
@@ -110,13 +123,15 @@ where
 
             Ok((
                 input,
-                Command {
+                (
                     channel,
-                    note,
-                    instrument,
-                    volume,
-                    effect,
-                },
+                    Command {
+                        note,
+                        instrument,
+                        volume,
+                        effect,
+                    },
+                ),
             ))
         },
         "in command",
@@ -227,7 +242,7 @@ fn effect<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(
         // We're using effects definition from OpenMPT but we're trying to adhere to ITTECH.TXT so
         // we only parse the first 31. In the future we might want to support the `itEx` format
         // from OpenMPT instead.
-        let (input, (effect, param)) = tuple((
+        let (rest, (effect, param)) = tuple((
             context!(ranged(le_u8, 0..=0x1A), "reading effect number"),
             context!(le_u8, "reading effect parameter"),
         ))(input)?;
@@ -238,37 +253,51 @@ fn effect<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(
             // Extract param nibbles.
             let (x, y) = (param >> 4, param & 0x0F);
 
-            let effect = match effect {
-                0x01 => EffectCmd::SetSpeed(param),
-                0x02 => EffectCmd::JumpOrder(param),
-                0x03 => EffectCmd::BreakRow(param),
-                0x04 => EffectCmd::VolumeSlide(match (x, y) {
-                    (0x0, 0x0) => VolumeSlide::Continue,
-                    (0x0, p) => VolumeSlide::Down(p.cast()),
-                    (p, 0x0) => VolumeSlide::Up(p.cast()),
-                    (0xF, p) => VolumeSlide::FineDown(p.cast()),
-                    (p, 0xF) => VolumeSlide::FineUp(p.cast()),
-                    (0x10..=0xFF, _) | (_, 0x10..=0xFF) => unreachable!(), // x, y are nibbles.
-                    _ => VolumeSlide::Other(param),
-                }),
-                0x05 => EffectCmd::PitchSlideDown(match param {
+            // Effects are numbered 0x1..=0x1A (or 1..=26 decimal), these numbers are represented
+            // as capital leters in in tracker UI and documentation. We convert it to ascii char
+            // range here to make the large match statement more readable.
+            let effect_code = (effect - 1 + b'A') as char;
+
+            // For more information on the values here, see the documentation for `EffectCmd`
+            // and its child enums.
+            let effect = match effect_code {
+                'A' => EffectCmd::SetSpeed(param),
+                'B' => EffectCmd::JumpOrder(param),
+                'C' => EffectCmd::BreakRow(param),
+                'D' | 'K' | 'L' => {
+                    let volume_slide = match (x, y) {
+                        (0x0, 0x0) => VolumeSlide::Continue,
+                        (0x0, p) => VolumeSlide::Down(p.cast()),
+                        (p, 0x0) => VolumeSlide::Up(p.cast()),
+                        (0xF, p) => VolumeSlide::FineDown(p.cast()),
+                        (p, 0xF) => VolumeSlide::FineUp(p.cast()),
+                        (0x10..=0xFF, _) | (_, 0x10..=0xFF) => unreachable!(), // x, y are nibbles.
+                        _ => VolumeSlide::Other(param),
+                    };
+                    match effect {
+                        0x04 => EffectCmd::VolumeSlide(volume_slide),
+                        0x0B => EffectCmd::VolumeSlideAndVibrato(volume_slide),
+                        0x0C => EffectCmd::VolumeSlideAndPortamento(volume_slide),
+                        _ => unreachable!(),
+                    }
+                },
+                'E' => EffectCmd::PitchSlideDown(match param {
                     0x00 ..= 0xDF => PitchSlideDown::Coarse(param.cast()),
                     0xF0 ..= 0xFF => PitchSlideDown::Fine((param - 0xF0).cast()),
                     0xE0 ..= 0xEF => PitchSlideDown::ExtraFine((param - 0xE0).cast()),
                 }),
-                0x06 => EffectCmd::PitchSlideUp(match param {
+                'F' => EffectCmd::PitchSlideUp(match param {
                     0x00 ..= 0xDF => PitchSlideUp::Coarse(param.cast()),
                     0xF0 ..= 0xFF => PitchSlideUp::Fine((param - 0xF0).cast()),
                     0xE0 ..= 0xEF => PitchSlideUp::ExtraFine((param - 0xE0).cast()),
                 }),
-                0x07 => EffectCmd::SlideToNote(param),
-                0x08 => EffectCmd::Vibrato(x.cast(), y.cast()),
-                0x09 => EffectCmd::Tremor(x.cast(), y.cast()),
-                0x0A => EffectCmd::Arpeggio(x.cast(), y.cast()),
-                0x0B => EffectCmd::Kxx(param),
-                0x0C => EffectCmd::Lxx(param),
-                0x0D => EffectCmd::SetChannelVolume(param),
-                0x0E => EffectCmd::ChannelVolumeSlide(match (x, y) {
+                'G' => EffectCmd::Portamento(param),
+                'H' => EffectCmd::Vibrato(x.cast(), y.cast()),
+                'I' => EffectCmd::Tremor(x.cast(), y.cast()),
+                'J' => EffectCmd::Arpeggio(x.cast(), if y != x { Some(y.cast()) } else { None }),
+                // 0x0B and 0x0C are handled together with 0x04 above
+                'M' => EffectCmd::SetChannelVolume(param),
+                'N' => EffectCmd::ChannelVolumeSlide(match (x, y) {
                     (0x0, 0x0) => ChannelVolumeSlide::Continue,
                     (0x0, p) => ChannelVolumeSlide::Down(p.cast()),
                     (p, 0x0) => ChannelVolumeSlide::Up(p.cast()),
@@ -277,9 +306,9 @@ fn effect<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(
                     (0x10..=0xFF, _) | (_, 0x10..=0xFF) => unreachable!(), // x, y are nibbles.
                     _ => ChannelVolumeSlide::Other(param),
                 }),
-                0x0F => EffectCmd::SetSampleOffset(SetSampleOffset::Low(param)),
-                0x13 if x == 0xA => EffectCmd::SetSampleOffset(SetSampleOffset::High(y.cast())),
-                0x10 => EffectCmd::PanningSlide(match (x, y) {
+                'O' => EffectCmd::SetSampleOffset(SetSampleOffset::Low(param)),
+                'S' if x == 0xA => EffectCmd::SetSampleOffset(SetSampleOffset::High(y.cast())),
+                'P' => EffectCmd::PanningSlide(match (x, y) {
                     (0x0, 0x0) => PanningSlide::Continue,
                     (0x0, p) => PanningSlide::Right(p.cast()),
                     (p, 0x0) => PanningSlide::Left(p.cast()),
@@ -288,31 +317,87 @@ fn effect<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(
                     (0x10..=0xFF, _) | (_, 0x10..=0xFF) => unreachable!(), // x, y are nibbles.
                     _ => PanningSlide::Other(param),
                 }),
-                0x11 => {
+                'Q' => {
                     // Value 8 is documented as unused however we can't simply exclude it from the
                     // valid range so we'll instead map it to 0 which means "no volume change".
                     let x = if x == 8 { 0 } else { x };
                     EffectCmd::Retrigger(x.cast(), y.cast())
                 }
-                0x12 => EffectCmd::Tremolo(x.cast(), y.cast()),
-                0x13 => {
-                    // TODO Sxx effects are ... complicated
-                    return Ok((input, None));
-                },
-                0x14 => EffectCmd::Tempo(match x {
+                'R' => EffectCmd::Tremolo(x.cast(), y.cast()),
+                'S' => EffectCmd::Set(match x {
+                    0x0 => Set::Continue,
+                    0x1 => Set::Glissando(y != 0x0),
+                    0x2 => Set::Finetune(y.cast()),
+                    0x3 | 0x4 | 0x5 => {
+                        let waveform = match y {
+                            0x0 => Waveform::Sine,
+                            0x1 => Waveform::RampDown,
+                            0x2 => Waveform::Square,
+                            0x3 => Waveform::Random,
+                            _ => bail!(input, "`S{}y` parameter y={:#x} out of range 0x0..=0x3", x, y),
+                        };
+                        match x {
+                            0x3 => Set::VibratoWaveform(waveform),
+                            0x4 => Set::TremoloWaveform(waveform),
+                            0x5 => Set::PanbrelloWaveform(waveform),
+                            _ => unreachable!(),
+                        }
+                    },
+                    0x6 => Set::PatternDelay(y.cast()),
+                    0x7 => match y {
+                        0x0 => Set::PastNote(SetPastNote::Cut),
+                        0x1 => Set::PastNote(SetPastNote::Off),
+                        0x2 => Set::PastNote(SetPastNote::Fade),
+                        0x3 => Set::NewNoteAction(SetNewNoteAction::Cut),
+                        0x4 => Set::NewNoteAction(SetNewNoteAction::Continue),
+                        0x5 => Set::NewNoteAction(SetNewNoteAction::Off),
+                        0x6 => Set::NewNoteAction(SetNewNoteAction::Fade),
+                        0x7 => Set::VolumeEnvelope(false),
+                        0x8 => Set::VolumeEnvelope(true),
+                        0x9 => Set::PanningEnvelope(false),
+                        0xA => Set::PanningEnvelope(true),
+                        0xB => Set::PitchEnvelope(false),
+                        0xC => Set::PitchEnvelope(true),
+                        _ => bail!(input, "command `S7y` parameter y={:#x} out of range 0x0..=0xC", y),
+                    },
+                    0x8 => Set::Panning(y.cast()),
+                    0x9 => match y {
+                        0x0 => Set::Surround(false),
+                        0x1 => Set::Surround(true),
+                        0x2..=0x7 => bail!(input,  "command `S9y` parameter y={:#x} out of range 0x0..=0x1 and 0x8..=0xF", y),
+                        0x8 => Set::Reverb(false),
+                        0x9 => Set::Reverb(true),
+                        0xA => Set::SurroundMode(SurroundMode::Center),
+                        0xB => Set::SurroundMode(SurroundMode::Quad),
+                        0xC => Set::FilterMode(FilterMode::Global),
+                        0xD => Set::FilterMode(FilterMode::Local),
+                        0xE => Set::Direction(PlayDirection::Forward),
+                        0xF => Set::Direction(PlayDirection::Backward),
+                        _ => unreachable!(),
+                    },
+                    // `SAy` handled together with `Oxx`, above.
+                    0xB if y == 0x0 => Set::LoopbackPoint,
+                    0xB => Set::LoopbackTimes(y.cast()),
+                    0xC => Set::NoteCut(y.cast()),
+                    0xD => Set::NoteDelay(y.cast()),
+                    0xE => Set::PatternRowDelay(y.cast()),
+                    0xF => Set::MIDIParam(y.cast()),
+                    _ => unreachable!(),
+                }),
+                'T' => EffectCmd::Tempo(match x {
                     0x0 => Tempo::SlideDown(y.cast()),
                     0x1 => Tempo::SlideUp(y.cast()),
                     _ => Tempo::Set(param.cast()),
                 }),
-                0x15 => EffectCmd::FineVibrato(x.cast(), y.cast()),
-                0x16 => {
+                'U' => EffectCmd::FineVibrato(x.cast(), y.cast()),
+                'V' => {
                     // The value is only valid up to 0x80 according to Schism Tracker, however even
                     // OpenMPT will let it go higher. I'm not sure what would be the "most correct"
                     // way of handling this, so let's just limit the value for now.
                     let param = param.min(0x80);
                     EffectCmd::SetGlobalVolume(param.cast())
                 },
-                0x17 => EffectCmd::GlobalVolumeSlide(match (x, y) {
+                'W' => EffectCmd::GlobalVolumeSlide(match (x, y) {
                     (0x0, 0x0) => GlobalVolumeSlide::Continue,
                     (0x0, p) => GlobalVolumeSlide::Down(p.cast()),
                     (p, 0x0) => GlobalVolumeSlide::Up(p.cast()),
@@ -321,21 +406,22 @@ fn effect<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(
                     (0x10..=0xFF, _) | (_, 0x10..=0xFF) => unreachable!(), // x, y are nibbles.
                     _ => GlobalVolumeSlide::Other(param),
                 }),
-                0x18 => EffectCmd::SetPanningPosition(param),
-                0x19 => EffectCmd::Panbrello(x.cast(), y.cast()),
-                0x1A => EffectCmd::MIDI(param),
+                'X' => EffectCmd::SetPanningPosition(param),
+                'Y' => EffectCmd::Panbrello(x.cast(), y.cast()),
+                'Z' => EffectCmd::MIDI(param),
                 _ => unreachable!(), // Used `ranged` parser to read the value.
             };
             Some(effect)
         };
         state.last_effect[channel.as_usize()] = effect;
-        Ok((input, effect))
+        Ok((rest, effect))
     } else if mask_var.contains(Mask::LAST_EFFECT) {
         Ok((input, state.last_effect[channel.as_usize()]))
     } else {
         Ok((input, None))
     }
 }
+
 
 #[cfg(test)]
 mod test {
@@ -389,7 +475,7 @@ mod test {
             EffectCmd::PitchSlideUp(PitchSlideUp::ExtraFine(1.cast())),
 
             // G
-            EffectCmd::SlideToNote(0x42),
+            EffectCmd::Portamento(0x42),
 
             // H
             EffectCmd::Vibrato(6.cast(), 7.cast()),
@@ -398,13 +484,13 @@ mod test {
             EffectCmd::Tremor(1.cast(), 5.cast()),
 
             // J
-            EffectCmd::Arpeggio(2.cast(), 3.cast()),
+            EffectCmd::Arpeggio(2.cast(), Some(3.cast())),
 
             // K
-            EffectCmd::Kxx(0xCA),
+            EffectCmd::VolumeSlideAndVibrato(VolumeSlide::Down(1.cast())),
 
             // L
-            EffectCmd::Lxx(0xFE),
+            EffectCmd::VolumeSlideAndPortamento(VolumeSlide::Down(2.cast())),
 
             // M
             EffectCmd::SetChannelVolume(0xE0),
@@ -435,7 +521,25 @@ mod test {
             EffectCmd::Tremolo(0xC.cast(), 0xD.cast()),
 
             // S
-            // TODO
+            EffectCmd::Set(Set::Continue),
+            EffectCmd::Set(Set::Continue),
+            EffectCmd::Set(Set::Glissando(false)),
+            EffectCmd::Set(Set::Glissando(true)),
+            EffectCmd::Set(Set::Glissando(true)),
+            EffectCmd::Set(Set::Finetune(0xD.cast())),
+            EffectCmd::Set(Set::VibratoWaveform(Waveform::RampDown)),
+            EffectCmd::Set(Set::TremoloWaveform(Waveform::Square)),
+            EffectCmd::Set(Set::PanbrelloWaveform(Waveform::Random)),
+            EffectCmd::Set(Set::PatternDelay(0x6.cast())),
+            EffectCmd::Set(Set::PastNote(SetPastNote::Cut)),
+            EffectCmd::Set(Set::NewNoteAction(SetNewNoteAction::Continue)),
+            EffectCmd::Set(Set::PitchEnvelope(true)),
+            EffectCmd::Set(Set::Surround(true)),
+            EffectCmd::Set(Set::FilterMode(FilterMode::Local)),
+            EffectCmd::Set(Set::LoopbackPoint),
+            EffectCmd::Set(Set::LoopbackTimes(0x3.cast())),
+            EffectCmd::Set(Set::PatternRowDelay(0xD.cast())),
+            EffectCmd::Set(Set::MIDIParam(0xF.cast())),
 
             // T
             EffectCmd::Tempo(Tempo::SlideDown(1.cast())),
@@ -471,10 +575,9 @@ mod test {
 
         let effects = module.patterns
             .into_iter().nth(0).unwrap()
-            .rows.into_iter()
-            .filter_map(|row| row.into_iter().next())
-            .inspect(|cmd| assert_eq!(cmd.channel.as_usize(), 0))
-            .filter_map(|cmd| cmd.effect)
+            .rows.iter()
+            .filter_map(|row| row.iter().next())
+            .filter_map(|(chan, cmd)| { assert_eq!(chan.as_usize(), 0); cmd.effect })
             .collect::<Vec<_>>();
 
         dbg!(&effects);

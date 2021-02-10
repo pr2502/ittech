@@ -1,7 +1,5 @@
-use crate::context;
 use crate::error::ContextError;
 use nom::bytes::complete::take;
-use nom::combinator::verify;
 use nom::error::{make_error, ErrorKind, ParseError};
 use nom::multi::count;
 use nom::Err::Error;
@@ -54,7 +52,7 @@ where
 
 /// Runs the embedded parser and verifies the result lies withing the given range.
 pub fn ranged<I, O, E, F, R>(
-    f: F,
+    mut f: F,
     range: R,
 ) -> impl FnMut(I) -> IResult<I, O, E>
 where
@@ -64,24 +62,28 @@ where
     F: Parser<I, O, E>,
     R: RangeBounds<O> + Clone,
 {
-    use std::ops::Bound;
+    move |input: I| {
+        use std::ops::Bound;
 
-    let range2 = range.clone();
-
-    context!(
-        verify(f, move |val| range.contains(val)),
-        "value must be in range {}..{}",
-        match range2.start_bound() {
-            Bound::Unbounded => String::new(),
-            Bound::Included(b) => format!("{:#x?}", b),
-            Bound::Excluded(_) => unreachable!(), // doesn't make sense for starting bound
-        },
-        match range2.end_bound() {
-            Bound::Unbounded => String::new(),
-            Bound::Included(b) => format!("={:#x?}", b),
-            Bound::Excluded(b) => format!("{:#x?}", b),
-        },
-    )
+        let (rest, val) = f.parse(input.clone())?;
+        if !range.contains(&val) {
+            bail!(
+                input,
+                "value must be in range {}..{}",
+                match range.start_bound() {
+                    Bound::Unbounded => String::new(),
+                    Bound::Included(b) => format!("{:#x?}", b),
+                    Bound::Excluded(_) => unreachable!(), // doesn't make sense for starting bound
+                },
+                match range.end_bound() {
+                    Bound::Unbounded => String::new(),
+                    Bound::Included(b) => format!("={:#x?}", b),
+                    Bound::Excluded(b) => format!("{:#x?}", b),
+                },
+            )
+        }
+        Ok((rest, val))
+    }
 }
 
 pub fn offset_list<'i, O, E, F>(

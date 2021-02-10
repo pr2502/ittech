@@ -49,15 +49,8 @@ impl<I> ParseError<I> for VerboseError<I> {
     }
 }
 
-/// This trait is required by the `context` combinator to add a string to an existing error
 pub trait ContextError<I>: Sized {
-    /// Creates a new error from an input position, a string and an existing error. This is used
-    /// mainly in the [context()] combinator, to add user friendly information to errors when
-    /// backtracking through a parse tree
-    fn add_context(_input: I, _ctx: Cow<'static, str>, other: Self) -> Self {
-        other
-    }
-
+    fn add_context(_input: I, _ctx: Cow<'static, str>, other: Self) -> Self;
     fn new(_input: I, _ctx: Cow<'static, str>) -> Self;
 }
 
@@ -75,24 +68,25 @@ impl<I> ContextError<I> for VerboseError<I> {
 }
 
 /// Create a new error from an input position, a static string and an existing error.
-/// This is used mainly in the [context()] combinator, to add user friendly information
+/// This is used mainly in the [context!] combinator, to add user friendly information
 /// to errors when backtracking through a parse tree
-pub fn context<I: Clone, E: ContextError<I>, F, O>(
+pub(crate) fn context<'i, I, E, F, O>(
     context: impl Fn() -> Cow<'static, str>,
     mut f: F,
 ) -> impl FnMut(I) -> IResult<I, O, E>
 where
     F: Parser<I, O, E>,
+    I: Clone,
+    E: ContextError<I> + 'i,
 {
     move |i: I| match f.parse(i.clone()) {
         Ok(o) => Ok(o),
-        Err(Err::Incomplete(i)) => Err(Err::Incomplete(i.clone())),
-        Err(Err::Error(e)) => Err(Err::Error(E::add_context(i.clone(), context(), e))),
-        Err(Err::Failure(e)) => Err(Err::Failure(E::add_context(i.clone(), context(), e))),
+        Err(Err::Incomplete(i)) => Err(Err::Incomplete(i)),
+        Err(Err::Error(e)) => Err(Err::Error(E::add_context(i, context(), e))),
+        Err(Err::Failure(e)) => Err(Err::Failure(E::add_context(i, context(), e))),
     }
 }
 
-#[macro_export]
 macro_rules! context {
     ( $parser: expr, $msg: literal $(,)? ) => {
         $crate::error::context(move || ::std::borrow::Cow::Borrowed($msg), $parser)
@@ -105,7 +99,6 @@ macro_rules! context {
     };
 }
 
-#[macro_export]
 macro_rules! error {
     ( $input: expr, $msg: literal $(,)? ) => {
         E::new($input, ::std::borrow::Cow::Borrowed($msg))
@@ -118,11 +111,9 @@ macro_rules! error {
     };
 }
 
-
-#[macro_export]
 macro_rules! bail {
     ($($tt:tt)*) => {
-        return ::std::result::Result::Err(::nom::Err::Error($crate::error!($($tt)*)))
+        return ::std::result::Result::Err(::nom::Err::Error(error!($($tt)*)))
     };
 }
 
@@ -132,12 +123,12 @@ macro_rules! bail {
 /// binary input to a context. The trace is instead of lines shown on an `xxd`-style hexdump.
 pub fn convert_error(
     input: &[u8],
-    e: VerboseError<&[u8]>,
+    err: VerboseError<&[u8]>,
 ) -> String {
     // We're using `write!` on a `String` buffer, which is infallible so `unwrap`s here are fine.
     let mut result = String::new();
 
-    for (i, (substring, kind)) in e.errors.iter().enumerate() {
+    for (i, (substring, kind)) in err.errors.iter().enumerate() {
         let offset = input.offset(substring);
 
         if input.is_empty() {
@@ -232,7 +223,7 @@ pub fn convert_error(
                 //     line = line,
                 //     caret = CARET,
                 //     column = caret_position,
-                // ),
+                // ).unwrap(),
             }
         }
     }

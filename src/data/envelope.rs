@@ -1,21 +1,14 @@
-use bitflags::bitflags;
+use super::*;
+
 
 #[derive(Clone, Debug)]
 pub struct Envelope {
     /// Envelope Flags
     pub flags: EnvelopeFlags,
 
-    /// Loop Start
-    pub loop_start: u8,
+    pub loop_: EnvelopeLoop,
 
-    /// Loop End
-    pub loop_end: u8,
-
-    /// Sustain Loop Start
-    pub sustain_loop_start: u8,
-
-    /// Sustain Loop End
-    pub sustain_loop_end: u8,
+    pub sustain_loop: EnvelopeLoop,
 
     /// Envelope Node Positions / Values
     pub nodes: Vec<Node>,
@@ -43,8 +36,21 @@ bitflags! {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct Node {
     pub value: i8,
     pub tick: u16,
+}
+
+// TODO is the loop an inclusive "interval"? that is, is the node marked as `end` used in the loop?
+// my guess would be yes, but check with OpenMPT code or interface first
+#[derive(Clone, Debug)]
+pub struct EnvelopeLoop {
+    /// Start - offset of the node
+    pub start: u8,
+
+    /// End - offset of the node
+    ///
+    /// Must be always `>= start`
+    pub end: u8,
 }
