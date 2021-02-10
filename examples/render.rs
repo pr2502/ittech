@@ -1,10 +1,9 @@
 #![feature(or_patterns)]
 
 use anyhow::{Context, Result};
-use hound::{SampleFormat, WavSpec, WavWriter};
 use ittech::error::VerboseError;
 use ittech::parser;
-use ittech::{Channel, Command, Module, Note, NoteCmd, Sample};
+use ittech::{ActiveChannels, Command, Module, Note, NoteCmd, Sample};
 use std::{env, fs, iter};
 
 const USAGE: &str = "usage: cargo run --example render -- <itmodule> <outputwav>";
@@ -22,18 +21,21 @@ fn main() -> Result<()> {
 
     let buffer = render(module).context("failed to render file")?;
 
-    let spec = WavSpec {
-        channels: 1,
-        sample_rate: SR as u32,
-        bits_per_sample: 32,
-        sample_format: SampleFormat::Float,
-    };
-    let mut outfile = WavWriter::create(&outname, spec)
+    let buffer = buffer.into_iter()
+        .map(|f| (f * (i16::MAX as f32)).round() as i16)
+        .collect();
+
+    let fmt = wav::Format::new(
+        wav::Channels::Mono,
+        SR as u32,
+        wav::BitDepth::B16,
+    );
+
+    let mut outfile = fs::File::create(&outname)
         .with_context(|| format!("failed to write file {}", &outname))?;
 
-    buffer.iter()
-        .try_for_each(|&sample| outfile.write_sample(sample))
-        .context("failed writing sample")?;
+    wav::write(fmt, wav::PCMData::B16(buffer), &mut outfile)
+        .with_context(|| format!("failed to write file {}", &outname))?;
 
     Ok(())
 }
@@ -50,7 +52,7 @@ fn resample(sample: &Sample, note: Note) -> Box<dyn Iterator<Item=f32> + '_> {
     Box::new(
         iter::from_fn(move || {
             if offset.trunc() as usize + 1 >= table.len() {
-                if sample.do_loop {
+                if sample.loop_.is_some() {
                     offset -= table.len() as f32;
                 } else {
                     return None
@@ -77,8 +79,8 @@ fn render(module: Module) -> Result<Vec<f32>> {
     let samples_per_row = SR * 60 / 4 / (module.tempo.as_u8() as usize);
 
     let mut buffer = vec![0.0f32; total_rows * samples_per_row];
-    let mut channels = iter::from_fn(|| Some(None))
-        .take(Channel::MAX as usize + 1)
+    let mut generators = iter::from_fn(|| Some(None))
+        .take(ActiveChannels::all().count())
         .collect::<Vec<_>>();
 
     module.ordered_patterns()
@@ -86,23 +88,23 @@ fn render(module: Module) -> Result<Vec<f32>> {
         .zip((0..).step_by(samples_per_row))
         .for_each(|(row, offset)| {
             let buffer = &mut buffer[offset..][..samples_per_row];
-            for Command { channel, note, instrument, .. } in row {
+            for (chan, Command { note, instrument, .. }) in row.iter() {
                 match (*note, instrument) {
                     (Some(NoteCmd::Play(note)), Some(instrument)) => {
                         let instrument = &module[instrument];
                         if let Some(sample) = instrument.sample_map[note] {
                             let sample = &module[sample];
-                            channels[channel.as_usize()] = Some(Box::new(resample(sample, note.into())));
+                            generators[chan.as_usize()] = Some(Box::new(resample(sample, note.into())));
                         }
                     }
                     (Some(NoteCmd::Cut | NoteCmd::Fade), _) => {
-                        channels[channel.as_usize()] = None;
+                        generators[chan.as_usize()] = None;
                     }
                     _ => {}
                 }
             }
             for channel in active_channels.iter() {
-                if let Some(generator) = &mut channels[channel.as_usize()] {
+                if let Some(generator) = &mut generators[channel.as_usize()] {
                     buffer.iter_mut()
                         .zip(generator)
                         .for_each(|(o, i)| *o += i * amp);

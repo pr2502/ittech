@@ -1,48 +1,43 @@
-use super::RangedU8;
-use std::convert::{TryFrom, TryInto};
+use super::*;
+use std::borrow::Borrow;
+use std::convert::TryInto;
 use std::fmt::{self, Debug};
 use std::iter::FromIterator;
-use std::num::TryFromIntError;
-use std::ops::{BitOr, BitOrAssign};
+use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign};
 
 
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
 pub struct Channel(RangedU8<0, 63>);
 
 impl Channel {
-    pub const MAX: u8 = 63;
+    /// Create a channel identifier with the given number
+    ///
+    /// Accepted range is 1..=64
+    pub fn new(number: u8) -> Channel {
+        assert!((1..=64).contains(&number), "channel number is out of range");
+        Channel::from_u8_index(number - 1)
+    }
 
+    /// Returns 0 based channel index (0..=63), as opposed to channel number (1..=64)
     pub fn as_usize(self) -> usize {
         self.0.as_u8() as usize
     }
 
-    pub(crate) fn from_u8_truncate(raw: u8) -> Channel {
-        Channel((raw & 63).try_into().unwrap())
-    }
-}
-
-impl TryFrom<u8> for Channel {
-    type Error = TryFromIntError;
-    fn try_from(raw: u8) -> Result<Self, Self::Error> {
-        Ok(Channel(raw.try_into()?))
-    }
-}
-
-impl From<Channel> for u8 {
-    fn from(chan: Channel) -> u8 {
-        chan.0.as_u8()
+    /// Creates channel from channel index (0..=63), as opposed to channel number (1..=64)
+    pub(crate) fn from_u8_index(raw: u8) -> Channel {
+        Channel(raw.try_into().expect("channel index out of range"))
     }
 }
 
 impl Debug for Channel {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        self.0.as_u8().fmt(f)
+        write!(f, "ch{:02}", self.0.as_u8() + 1)
     }
 }
 
 
 /// Mask representing active channels in a particular pattern or module.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct ActiveChannels(u64);
 
 impl ActiveChannels {
@@ -54,17 +49,35 @@ impl ActiveChannels {
         ActiveChannels(0)
     }
 
-    pub fn iter(self) -> impl Iterator<Item=Channel> {
-        (0..=Channel::MAX)
-            .filter(move |chan| (self.0 & (1u64 << chan)) != 0)
-            .map(|chan| chan.try_into().unwrap())
+    pub fn new<C: Borrow<Channel>>(iter: impl IntoIterator<Item=C>) -> ActiveChannels {
+        iter.into_iter()
+            .map(|c| *c.borrow())
+            .collect()
     }
 
-    pub fn count(self) -> usize {
+    pub fn iter(self) -> impl Iterator<Item=Channel> {
+        (0..=63)
+            .filter(move |chan| (self.0 & (1u64 << chan)) != 0)
+            .map(Channel::from_u8_index)
+    }
+
+    pub const fn count(self) -> usize {
         self.0.count_ones() as usize
     }
 }
 
+impl BitAnd<ActiveChannels> for ActiveChannels {
+    type Output = ActiveChannels;
+    fn bitand(self, rhs: ActiveChannels) -> Self::Output {
+        ActiveChannels(self.0 & rhs.0)
+    }
+}
+
+impl BitAndAssign for ActiveChannels {
+    fn bitand_assign(&mut self, rhs: ActiveChannels) {
+        *self = *self & rhs;
+    }
+}
 
 impl BitOr<ActiveChannels> for ActiveChannels {
     type Output = ActiveChannels;

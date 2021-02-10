@@ -1,8 +1,7 @@
 use super::*;
-use bitflags::bitflags;
 
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Module {
     /// Song Name, null-terminated (but may also contain nulls)
     pub name: Name,
@@ -59,14 +58,34 @@ pub struct Module {
     pub patterns: Vec<Pattern>,
 }
 
-#[derive(Debug)]
+pub(crate) struct ModuleHeader {
+    pub name: Name,
+    pub highlight: (u8, u8),
+    pub made_with_version: u16,
+    pub compatible_with_version: u16,
+    pub flags: ModuleFlags,
+    pub global_volume: RangedU8<0, 128>,
+    pub sample_volume: RangedU8<0, 128>,
+    pub speed: RangedU8<1, 255>,
+    pub tempo: RangedU8<31, 255>,
+    pub pan_separation: RangedU8<0, 128>,
+    pub pitch_wheel_depth: u8,
+    pub message_length: u16,
+    pub message_offset: u32,
+    pub init_channel_panning: [u8; 64],
+    pub init_channel_volume: [u8; 64],
+    pub orders: Vec<Order>,
+    pub instrument_offsets: Vec<u32>,
+    pub sample_offsets: Vec<u32>,
+    pub pattern_offsets: Vec<u32>,
+}
+
+#[derive(Clone, Debug)]
 pub enum Order {
     Index(PatternId),
     Separator,
     EndOfSong,
 }
-
-ranged_u8_newtype!(PatternId, 0..=199);
 
 bitflags! {
     pub struct ModuleFlags: u32 {

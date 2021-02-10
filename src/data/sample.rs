@@ -1,17 +1,8 @@
-use super::{DOSFilename, Name};
-use bitflags::bitflags;
+use super::*;
 
-#[derive(Debug)]
-pub struct Sample {
-    pub name: Name,
-    pub filename: DOSFilename,
-    pub samplerate_c5: u32,
-    pub do_loop: bool,
-    pub data: Option<Vec<f32>>,
-}
 
 #[derive(Clone, Debug)]
-pub struct SampleHeader {
+pub struct Sample {
     /// Sample Name, null-terminated (but may also contain nulls)
     pub name: Name,
 
@@ -21,35 +12,24 @@ pub struct SampleHeader {
     /// Global Volume
     pub global_volume: u8,
 
-    /// combined Sample Flags and Sample Import Format
-    pub flags: SampleFlags,
-
     /// Default Volume
     pub default_volume: u8,
 
-    /// Sample Panning
-    pub sample_panning: u8,
+    /// Default Panning
+    pub default_panning: u8,
 
-    /// Sample Loop Begin (in samples)
-    pub loop_start: u32,
+    /// Loop after the note has been released (Off ==) command, or directly after reaching the end
+    /// point if the sustain loop is off.
+    pub loop_: Option<SampleLoop>,
 
-    /// Sample Loop End (in samples)
-    pub loop_end: u32,
+    /// Loop after reching the end point while holding the note.
+    pub sustain_loop: Option<SampleLoop>,
 
-    /// C-5 frequency
+    /// C-5 playback frequency.
+    ///
+    /// If set to the native sampling rate of the sound sample playing the sample at C-5 will play
+    /// it back unchanged.
     pub samplerate_c5: u32,
-
-    /// Sample Sustain Begin (in samples)
-    pub sustain_loop_start: u32,
-
-    /// Sample Sustain End (in samples)
-    pub sustain_loop_end: u32,
-
-    /// Pointer to sample data (offset into the file)
-    pub data_offset: u32,
-
-    /// Sample Length (in samples, depends on sample format)
-    pub data_length: u32,
 
     /// Auto-Vibrato Rate (called Sweep in IT)
     pub vibrato_speed: u8,
@@ -62,10 +42,52 @@ pub struct SampleHeader {
 
     /// Auto-Vibrato Type
     pub vibrato_type: u8,
+
+    /// Sample samples converted to a normalized `f32` representation (values from -1.0 to 1.0)
+    pub data: Option<Vec<f32>>,
+}
+
+pub(crate) struct SampleHeader {
+    pub name: Name,
+    pub filename: DOSFilename,
+    pub global_volume: u8,
+    pub default_volume: u8,
+    pub default_panning: u8,
+    pub loop_: Option<SampleLoop>,
+    pub sustain_loop: Option<SampleLoop>,
+    pub samplerate_c5: u32,
+    pub vibrato_speed: u8,
+    pub vibrato_depth: u8,
+    pub vibrato_rate: u8,
+    pub vibrato_type: u8,
+
+    pub flags: SampleFlags,
+    pub data_offset: u32,
+    pub data_length: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct SampleLoop {
+    /// Start - offset into the sample in samples
+    pub start: u32,
+
+    /// End - offset into the sample in samples.
+    ///
+    /// Must be always `>= start`
+    pub end: u32,
+
+    /// Bidirectional loop (also ping-pong loop)
+    ///
+    /// * **false** after reading the sample at `end` offset the playback head jumps to the `start`
+    ///   offset.
+    /// * **true** after reading the sample at `end` offset the playback reverses and continues with
+    ///   the previous sample until it reaches the `start` offset, then it changes direction to
+    ///   normal.
+    pub bidi: bool,
 }
 
 bitflags! {
-    pub struct SampleFlags: u16 {
+    pub(crate) struct SampleFlags: u16 {
         // Originally `flags` field.
 
         /// On = sample associated with header.
@@ -136,9 +158,8 @@ bitflags! {
 }
 
 impl SampleFlags {
-    pub(crate) fn from_parts(flags: u8, cvt: u8) -> SampleFlags {
+    pub fn from_parts(flags: u8, cvt: u8) -> SampleFlags {
         let bits = (flags as u16) | ((cvt as u16) << 8);
         SampleFlags::from_bits_truncate(bits)
     }
 }
-

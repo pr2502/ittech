@@ -1,4 +1,4 @@
-use super::{ActiveChannels, Channel, RangedU8};
+use super::*;
 use std::convert::TryFrom;
 use std::fmt::{self, Debug, Display};
 use std::num::TryFromIntError;
@@ -8,12 +8,20 @@ use std::str;
 #[derive(Clone, Debug)]
 pub struct Pattern {
     pub active_channels: ActiveChannels,
-    pub rows: Vec<Vec<Command>>,
+    pub rows: Vec<Row>,
 }
+
+#[derive(Clone)]
+pub struct Row {
+    map: Vec<(Channel, Command)>,
+}
+
+// TODO replace Row=Vec<Command> with Row=Map<Channel, Command> and remove channel from Command
+// struct. implement this Map as a sorted Vec<(Channel, Command)> internally (don't expose this
+// through the API). make the Map iterable in sorted order.
 
 #[derive(Clone, Debug)]
 pub struct Command {
-    pub channel: Channel,
     pub note: Option<NoteCmd>,
     pub instrument: Option<InstrumentId>,
     pub volume: Option<VolumeCmd>,
@@ -31,255 +39,246 @@ pub enum NoteCmd {
 #[derive(Clone, Copy)]
 pub struct Note(u8);
 
-ranged_u8_newtype!(InstrumentId, 0..=98);
-
+/// Volume column commands
+///
+/// These commands are not parsed by nibbles and masks like [`EffectCmd`] but by ranges so the
+/// `?xy` notation doesn't make sense here.
+// Documentation for individual commands is adapted from OpenMPT UI.
 #[derive(Clone, Copy, Debug)]
 pub enum VolumeCmd {
-    /// v?? Set volume
+    /// `v??` Set volume
     SetVolume(RangedU8<0, 64>),
 
-    /// p?? Set panning
+    /// `p??` Set panning
     Panning(RangedU8<0, 64>),
 
-    /// a?? Fine volume up
+    /// `a??` Fine volume up
     FineVolumeUp(RangedU8<0, 9>),
 
-    /// b?? Fine volume down
+    /// `b??` Fine volume down
     FineVolumeDown(RangedU8<0, 9>),
 
-    /// c?? Volume slide up
+    /// `c??` Volume slide up
     VolumeSlideUp(RangedU8<0, 9>),
 
-    /// d?? Volume slide down
+    /// `d??` Volume slide down
     VolumeSlideDown(RangedU8<0, 9>),
 
-    /// e?? Pitch slide down
+    /// `e??` Pitch slide down
     PitchSlideDown(RangedU8<0, 9>),
 
-    /// f?? Pitch slide up
+    /// `f??` Pitch slide up
     PitchSlideUp(RangedU8<0, 9>),
 
-    /// g?? Portamento to next note speed
+    /// `g??` Portamento to next note speed
     Portamento(RangedU8<0, 9>),
 
-    /// h?? Vibrato depth
+    /// `h??` Vibrato depth
     Vibrato(RangedU8<0, 9>),
 }
 
 /// Effect column commands
 ///
-/// Documentation for these is taken from the Schism Tracker help text.
+/// Parameters are parsed by nibbles and masks on them. Each command has one byte of parameter data
+/// to work with. `Axx` means the command `A` uses the whole byte as its argument, `Hxy` means the
+/// command `H` uses the first nibble as parameter `x` and second nibble as parameter `y`.
+///
+/// Some commands like `D` use masks to further granularize the command, however some commands only
+/// use a subset of the values `u8` can have. Currently handling of out-of-range values in this
+/// crate is inconsistent, feel free to report a bug on inconsistency, ideally all values would be
+/// parsable and interpretable in some way and with methods to canonicalize them.
+///
+/// ## Additional resources
+/// - <https://wiki.openmpt.org/Manual:_Effect_Reference>
+/// - <https://modarchive.org/forums/index.php?topic=2222.0>
+// Documentation for these is adapted from the Schism Tracker help text and OpenMPT wiki.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EffectCmd {
-    /// Axx Set song speed (hex)
+    /// `Axx` Set Speed
+    ///
+    /// *no memory*
+    ///
+    /// Sets the module Speed (ticks per row).
     SetSpeed(u8),
 
-    /// Bxx Jump to Order (hex)
+    /// `Bxx` Jump to Order
     JumpOrder(u8),
 
-    /// Cxx Break to row xx (hex) of next pattern
+    /// `Cxx` Break to row `xx` of next pattern
     BreakRow(u8),
 
-    /// Dxx ...
+    /// `Dxx` ...
     VolumeSlide(VolumeSlide),
 
-    /// Exx ...
+    /// `Exx` ...
     PitchSlideDown(PitchSlideDown),
 
-    /// Fxx ...
+    /// `Fxx` ...
     PitchSlideUp(PitchSlideUp),
 
-    /// Gxx Slide to note with speed xx
-    SlideToNote(u8),
+    /// `Gxx` Slide to note with speed `xx`
+    Portamento(u8),
 
-    /// Hxy Vibrato with speed x, depth y
+    /// `Hxy` Vibrato with speed `x`, depth `y`
     Vibrato(RangedU8<0, 0x0F>, RangedU8<0, 0x0F>),
 
-    /// Ixy Tremor with ontime x and offtime y
+    /// `Ixy` Tremor with ontime `x` and offtime `y`
     Tremor(RangedU8<0, 0x0F>, RangedU8<0, 0x0F>),
 
-    /// Jxy Arpeggio with halftones x and y
-    Arpeggio(RangedU8<0, 0x0F>, RangedU8<0, 0x0F>),
+    /// `Jxy` Arpeggio with halftones `x` and `y`
+    Arpeggio(RangedU8<0, 0x0F>, Option<RangedU8<0, 0x0F>>),
 
-    /// Kxx Dual Command: H00 & Dxx
-    // TODO what is this ???
-    Kxx(u8),
+    /// `Kxx` Dual Command: `H00` & `Dxx`
+    VolumeSlideAndVibrato(VolumeSlide),
 
-    /// Lxx Dual Command: G00 & Dxx
-    // TODO ???
-    Lxx(u8),
+    /// `Lxx` Dual Command: `G00` & `Dxx`
+    VolumeSlideAndPortamento(VolumeSlide),
 
-    /// Mxx Set channel volume to xx (0->40h)
+    /// `Mxx` Set channel volume to `xx` (0->40h)
+    // TODO limit range
     SetChannelVolume(u8),
 
-    /// Nxx ...
+    /// `Nxx` ...
     ChannelVolumeSlide(ChannelVolumeSlide),
 
-    /// Oxx Set sample offset to yxx00h, y set with SAy
-    /// & SAy Set high value of sample offset yxx00h
+    /// `Oxx` Set sample offset to `yxx00h`, `SAy` Set high value of sample offset `yxx00h`
     SetSampleOffset(SetSampleOffset),
 
-    /// Pxx ...
+    /// `Pxx` ...
     PanningSlide(PanningSlide),
 
-    /// Qxy Retrigger note every y ticks with volume modifier x
-    ///   Values for x:
-    ///     0: No volume change         8: Not used
-    ///     1: -1                       9: +1
-    ///     2: -2                       A: +2
-    ///     3: -4                       B: +4
-    ///     4: -8                       C: +8
-    ///     5: -16                      D: +16
-    ///     6: *2/3                     E: *3/2
-    ///     7: *1/2                     F: *2
+    /// `Qxy` Retrigger note every `y` ticks with volume modifier `x`
+    ///
+    /// Values for `x`:
+    /// ```txt
+    ///     0: No volume change     8: Not used
+    ///     1: -1                   9: +1
+    ///     2: -2                   A: +2
+    ///     3: -4                   B: +4
+    ///     4: -8                   C: +8
+    ///     5: -16                  D: +16
+    ///     6: *2/3                 E: *3/2
+    ///     7: *1/2                 F: *2
+    /// ```
     // TODO a reasonable way to express the disjoint interval for `x` in the type?
     Retrigger(RangedU8<0, 0x0F>, RangedU8<0, 0x0F>),
 
-    /// Rxy Tremolo with speed x, depth y
+    /// `Rxy` Tremolo with speed `x`, depth `y`
     Tremolo(RangedU8<0, 0x0F>, RangedU8<0, 0x0F>),
 
-    /// S0x Set filter
-    /// S1x Set glissando control
-    /// S2x Set finetune
-    /// S3x Set vibrato waveform to type x
-    /// S4x Set tremolo waveform to type x
-    /// S5x Set panbrello waveform to type x
-    ///   Waveforms for commands S3x, S4x and S5x:
-    ///     0: Sine wave
-    ///     1: Ramp down
-    ///     2: Square wave
-    ///     3: Random wave
-    /// S6x Pattern delay for x ticks
-    /// S70 Past note cut
-    /// S71 Past note off
-    /// S72 Past note fade
-    /// S73 Set NNA to note cut
-    /// S74 Set NNA to continue
-    /// S75 Set NNA to note off
-    /// S76 Set NNA to note fade
-    /// S77 Turn off volume envelope
-    /// S78 Turn on volume envelope
-    /// S79 Turn off panning envelope
-    /// S7A Turn on panning envelope
-    /// S7B Turn off pitch envelope
-    /// S7C Turn on pitch envelope
-    /// S8x Set panning position
-    /// S91 Set surround sound
-    /// S99 Toggle duck modulator
-    Todo1,
+    /// `Sxx` ...
+    Set(Set),
 
-    /// SAy Set high value of sample offset yxx00h
-    Todo2,
-    // NOTE This one is already accounted for together with Oxx, so leave it out of the Sxx
-    // SetSampleOffsetHigh(RangedU8<0, 0x0F>),
-
-    /// SB0 Set loopback point
-    /// SBx Loop x times to loopback point
-    /// SCx Note cut after x ticks
-    /// SDx Note delay for x ticks
-    /// SEx Pattern delay for x rows
-    /// SFx Set parameterised MIDI Macro
-    Todo3,
-
-    /// Txx ...
+    /// `Txx` ...
     Tempo(Tempo),
 
-    /// Uxy Fine vibrato with speed x, depth y
+    /// `Uxy` Fine vibrato with speed `x`, depth `y`
     FineVibrato(RangedU8<0, 0x0F>, RangedU8<0, 0x0F>),
 
-    /// Vxx Set global volume to xx (0->80h)
+    /// `Vxx` Set global volume to `xx` (0->80h)
     SetGlobalVolume(RangedU8<0, 0x80>),
 
-    /// Wxx ...
+    /// `Wxx` ...
     GlobalVolumeSlide(GlobalVolumeSlide),
 
-    /// Xxx Set panning position (0->0FFh)
+    /// `Xxx` Set panning position (0->0FFh)
     SetPanningPosition(u8),
 
-    /// Yxy Panbrello with speed x, depth y
+    /// `Yxy` Panbrello with speed `x`, depth `y`
     Panbrello(RangedU8<0, 0x0F>, RangedU8<0, 0x0F>),
 
-    /// Zxx MIDI Macros
+    /// `Zxx` MIDI Macros
     MIDI(u8),
 }
 
-/// Effect Dxx ...
+/// TODO
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EffectType {
+    GlobalTiming,
+    GlobalPattern,
+    Volume,
+    Pitch,
+    Panning,
+    Misc,
+}
+
+/// Effect `Dxx` ...
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum VolumeSlide {
-    /// D00
-    // TODO figure out what it does in OpenMPT (my guess is it acts as no effect at all)
+    /// `D00` Reuse the previous value
+    // TODO figure out which "previous values" are shared between which effects and what flags
+    // affect it, there are some mentions in ITTECH.TXT but the naming is inconsistent.
     Continue,
 
-    /// D0x Volume slide down by x
+    /// `D0x` Volume slide down by `x`
     Down(RangedU8<1, 0x0F>),
 
-    /// Dx0 Volume slide up by x
+    /// `Dx0` Volume slide up by `x`
     Up(RangedU8<1, 0x0F>),
 
-    /// DFx Fine volume slide down by x
+    /// `DFx` Fine volume slide down by `x`
     FineDown(RangedU8<1, 0x0F>),
 
-    /// DxF Fine volume slide up by x
+    /// `DxF` Fine volume slide up by `x`
     FineUp(RangedU8<1, 0x0E>),
 
-    /// Dxx Catchall when the other variants don't make sense.
+    /// `Dxx` Catchall when the other variants don't make sense.
     Other(u8),
 }
 
-/// Effect Exx ...
+/// Effect `Exx` ...
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PitchSlideDown {
-    /// Exx Pitch slide down by xx
+    /// `Exx` Pitch slide down by `xx`
     // 0xDF is the highest parameter value not matched by the following two effects, therefore I
     // assume it's divided up into ranges.
     Coarse(RangedU8<0, 0xDF>),
 
-    /// EFx Fine pitch slide down by x
+    /// `EFx` Fine pitch slide down by `x`
     Fine(RangedU8<0, 0x0F>),
 
-    /// EEx Extra fine pitch slide down by x
+    /// `EEx` Extra fine pitch slide down by `x`
     ExtraFine(RangedU8<0, 0x0F>),
 }
 
-/// Effect Fxx ...
+/// Effect `Fxx` ...
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PitchSlideUp {
-    /// Fxx Pitch slide up by xx
+    /// `Fxx` Pitch slide up by `xx`
     // 0xDF is the highest parameter value not matched by the following two effects, therefore I
     // assume it's divided up into ranges.
     Coarse(RangedU8<0, 0xDF>),
 
-    /// FFx Fine pitch slide up by x
+    /// `FFx` Fine pitch slide up by `x`
     Fine(RangedU8<0, 0x0F>),
 
-    /// FEx Extra fine pitch slide up by x
+    /// `FEx` Extra fine pitch slide up by `x`
     ExtraFine(RangedU8<0, 0x0F>),
 }
 
-/// Effect Nxx ...
+/// Effect `Nxx` ...
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ChannelVolumeSlide {
-    /// N00
-    // TODO figure out what it does in OpenMPT
+    /// `N00` Reuse the previous value
     Continue,
 
-    /// N0x Channel volume slide down by x
+    /// `N0x` Channel volume slide down by `x`
     Down(RangedU8<1, 0x0F>),
 
-    /// Nx0 Channel volume slide up by x
+    /// `Nx0` Channel volume slide up by `x`
     Up(RangedU8<1, 0x0F>),
 
-    /// NFx Fine channel volume slide down by x
+    /// `NFx` Fine channel volume slide down by `x`
     FineDown(RangedU8<1, 0x0F>),
 
-    /// NxF Fine channel volume slide up by x
+    /// `NxF` Fine channel volume slide up by `x`
     FineUp(RangedU8<1, 0x0E>),
 
-    /// Nxx Catchall when the other variants don't make sense.
+    /// `Nxx` Catchall when the other variants don't make sense.
     Other(u8),
 }
 
-/// Effect Oxx and SAy combined
+/// Effects `Oxx` and `SAy` combined
 ///
 /// Because they're doing part of the same thing and this will just make it nicer to use,
 /// hopefully.
@@ -289,66 +288,297 @@ pub enum SetSampleOffset {
     High(RangedU8<0, 0x0F>),
 }
 
-/// Effect Pxx ...
+/// Effect `Pxx` ...
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PanningSlide {
-    /// P00
-    // TODO figure out what it does in OpenMPT
+    /// `P00` Reuse the previous value
     Continue,
 
-    /// P0x Panning slide to right by x
+    /// `P0x` Panning slide to right by `x`
     Right(RangedU8<1, 0x0F>),
 
-    /// Px0 Panning slide to left by x
+    /// `Px0` Panning slide to left by `x`
     Left(RangedU8<1, 0x0F>),
 
-    /// PFx Fine panning slide to right by x
+    /// `PFx` Fine panning slide to right by `x`
     FineRight(RangedU8<0, 0x0F>),
 
-    /// PxF Fine panning slide to left by x
+    /// `PxF` Fine panning slide to left by `x`
     FineLeft(RangedU8<0, 0x0F>),
 
-    /// Pxx Catchall when the other variants don't make sense.
+    /// `Pxx` Catchall when the other variants don't make sense.
     Other(u8),
 }
 
-// TODO Effect Sxx ...
+/// Effect `Sxx` ...
+///
+/// `SAy` is represented using [`SetSampleOffset::High`] in Rust.
+///
+/// All the `Sxx` commands share the same memory, this should include the `SAy` command.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Set {
+    /// `S00` Continue
+    ///
+    /// ## Canonicalization
+    /// Value of the second nibble is ignored, any value in range `S00..=S0F` will be parsed as
+    /// this, but it will only be serialized as `S00`.
+    Continue,
 
-/// Effect Txx ...
+    // Schism Tracker and OpenMPT (IT Effects) documentation disagree on this one. OpenMPT says
+    // `S00` recalls `Sxx` command memory but Schism Tracker says `S0x` sets filter, it is however
+    // marked red which means (*TODO does it?*) it's not supported.
+    //
+    // /// `S0x` Set filter
+    // Filter(RangedU8<1, 0x0F>),
+
+    /// `S1x` Set glissando on/off
+    ///
+    /// Configures whether tone portamento effects slide by semitones or smoothly.
+    /// - `S10` *disables* glissando, portamento slides smoothly.
+    /// - `S11` *enables* glissando, portamento behaves like glissando and snaps to semitones.
+    ///
+    /// ## Canonicalization
+    /// When the value `y` is more than `1` it gets converted to `true`.
+    Glissando(bool),
+
+    /// `S2x` Set finetune
+    ///
+    /// *Considered a legacy command.*
+    ///
+    /// Overrides the current sample's C-5 frequency with a MOD finetune value.
+    ///
+    /// TODO link to _what is_ MOD finetune value
+    Finetune(RangedU8<0, 0x0F>),
+
+    /// `S3x` Set vibrato waveform to type `x`
+    VibratoWaveform(Waveform),
+
+    /// `S4x` Set tremolo waveform to type `x`
+    TremoloWaveform(Waveform),
+
+    /// `S5x` Set panbrello waveform to type `x`
+    PanbrelloWaveform(Waveform),
+
+    /// `S6x` Pattern delay for `x` ticks
+    PatternDelay(RangedU8<0, 0x0F>),
+
+    /// `S70`, `S71`, `S72` Past note cut, off or fade
+    PastNote(SetPastNote),
+
+    /// `S73`, `S74`, `S75`, `S76` - Set NNA to note cut, continue, off or fade
+    NewNoteAction(SetNewNoteAction),
+
+    /// `S77`, `S78` Turn off/on volume envelope
+    VolumeEnvelope(bool),
+
+    /// `S79`, `S7A` Turn off/on panning envelope
+    PanningEnvelope(bool),
+
+    /// `S7B`, `S7C` Turn off/on pitch envelope
+    PitchEnvelope(bool),
+
+    /// `S8x` Set panning position to `x`
+    Panning(RangedU8<0, 0x0F>),
+
+    /// `S90`, `S91` Turn off/on surround sound
+    ///
+    /// Only `S91` (`Set::Surround(true)`) is supported in the original Impulse Tracker,
+    /// other `S9x` commands are MPTM extensions.
+    Surround(bool),
+
+    /// `S98`, `S99` Turn off/on reverb
+    ///
+    /// *MPTM extension*
+    Reverb(bool),
+
+    // Collides with `Set::Reverb(true)`, this is from the Schism Tracker help but is listed
+    // in red and marked as not implemented.
+    //
+    // /// `S99` Toggle duck modulator
+    // ToggleDuckModulator,
+
+    /// `S9A`, `S9B` Set Surround mode to Center or Quad
+    ///
+    /// *MPTM extension*
+    SurroundMode(SurroundMode),
+
+    /// `S9C`, `S9D` Set filter mode to Global or Local
+    ///
+    /// *MPTM extension*
+    FilterMode(FilterMode),
+
+    /// `S9E`, `S9F` Play Forward or Backward
+    ///
+    /// *MPTM extension*
+    Direction(PlayDirection),
+
+    // SAy is handled by [`SetSampleOffset`] together with the Oxx command.
+
+    /// `SB0` Set loopback point
+    LoopbackPoint,
+
+    /// `SBx` Loop `x` times to loopback point
+    LoopbackTimes(RangedU8<0x01, 0x0F>),
+
+    /// `SCx` Note cut after `x` ticks
+    NoteCut(RangedU8<0, 0x0F>),
+
+    /// `SDx` Note delay for `x` ticks
+    NoteDelay(RangedU8<0, 0x0F>),
+
+    /// `SEx` Pattern delay for `x` rows
+    PatternRowDelay(RangedU8<0, 0x0F>),
+
+    /// `SFx` Set parameterised MIDI Macro
+    MIDIParam(RangedU8<0, 0x0F>),
+}
+
+/// Waveforms for commands `S3x`, `S4x` and `S5x`
+///
+/// - __0__ - Sine wave
+/// - __1__ - Ramp down
+/// - __2__ - Square wave
+/// - __3__ - Random wave
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Waveform {
+    Sine,
+    RampDown,
+    Square,
+    Random,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SetPastNote {
+    Cut,
+    Off,
+    Fade,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SetNewNoteAction {
+    Cut,
+    Off,
+    Fade,
+    Continue,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SurroundMode {
+    /// `S9A` Sets the surround mode to Center Surround for all channels.
+    ///
+    /// This is the default mode. The `S91` command will place the channel in the center of
+    /// the rear channels. Any panning command will bring it back to the front channels.
+    Center,
+
+    /// `S9B` Sets the surround mode to Quad Surround for all channels.
+    ///
+    /// In this mode, panning commands can adjust the position of the rear channels. Switching
+    /// between the front and rear channels can only be done by using the `S91` and `S90` commands.
+    Quad,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FilterMode {
+    /// `S9C` Sets filter mode to Global on all channels (Impulse Tracker behaviour).
+    ///
+    /// In this mode, when resonant filters are enabled with a `Zxx` effect, they will stay active
+    /// until explicitly disabled by setting the cutoff frequency to the maximum (`Z7F`), and the
+    /// resonance to the minimum (`Z80`).
+    Global,
+
+    /// `S9D` Sets filter mode to Local on all channels.
+    ///
+    /// In this mode, the resonant filter will only affect the current note and will revert when
+    /// a new note is played.
+    Local,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PlayDirection {
+    /// `S9E` Forces the current sample to play forward.
+    Forward,
+
+    /// `S9F` Forces the current sample to play backward.
+    Backward,
+}
+
+/// Effect `Txx` ...
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Tempo {
-    /// T0x Tempo slide down by x
+    /// `T0x` Tempo slide down by `x`
     SlideDown(RangedU8<0, 0x0F>),
 
-    /// T1x Tempo slide up by x
+    /// `T1x` Tempo slide up by `x`
     SlideUp(RangedU8<0, 0x0F>),
 
-    /// Txx Set Tempo to xx (20h->0FFh)
+    /// `Txx` Set Tempo to `xx` (20h->0FFh)
     Set(RangedU8<0x20, 0xFF>),
 }
 
-/// Effect Wxx ...
+/// Effect `Wxx` ...
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GlobalVolumeSlide {
-    /// W00
-    // TODO figure out what it does in OpenMPT
+    /// `W00` Reuse the previous value
     Continue,
 
-    /// W0x Global volume slide down by x
+    /// `W0x` Global volume slide down by `x`
     Down(RangedU8<1, 0x0F>),
 
-    /// Wx0 Global volume slide up by x
+    /// `Wx0` Global volume slide up by `x`
     Up(RangedU8<1, 0x0F>),
 
-    /// WFx Fine global volume slide down by x
+    /// `WFx` Fine global volume slide down by `x`
     FineDown(RangedU8<1, 0x0F>),
 
-    /// WxF Fine global volume slide up by x
+    /// `WxF` Fine global volume slide up by `x`
     FineUp(RangedU8<1, 0x0E>),
 
-    /// Wxx Catchall when the other variants don't make sense.
+    /// `Wxx` Catchall when the other variants don't make sense.
     Other(u8),
 }
+
+
+impl Row {
+    pub const fn empty() -> Row {
+        Row { map: Vec::new() }
+    }
+
+    pub(crate) fn from_vec(mut vec: Vec<(Channel, Command)>) -> Row {
+        vec.sort_unstable_by_key(|(chan, _)| *chan);
+        Row { map: vec }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item=(Channel, &Command)> + '_ {
+        self.map
+            .iter()
+            .map(|(chan, command)| (*chan, command))
+    }
+}
+
+impl Debug for Row {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_map()
+            .entries(
+                self.map
+                    .iter()
+                    .map(|pair| (&pair.0, &pair.1))
+            )
+            .finish()
+    }
+}
+
+impl Get<Channel> for Row {
+    type Output = Command;
+    fn get(&self, index: Channel) -> Option<&Self::Output> {
+        self.map
+            .binary_search_by_key(&index, |(chan, _)| *chan)
+            .ok()
+            .map(|idx| &self.map[idx].1)
+    }
+}
+
+impl_index_from_get!(Row, Channel);
+
 
 
 impl TryFrom<u8> for Note {
@@ -359,6 +589,8 @@ impl TryFrom<u8> for Note {
         } else {
             // There is no public constructor for `TryFromIntError` so we obtain it through a
             // definitely-out-of-range cast ... :/
+            //
+            // TODO make a custom error for the ranged integers and replace this nonsense.
             Err(u8::try_from(u16::MAX).unwrap_err())
         }
     }

@@ -16,6 +16,10 @@
 #[doc(include = "../ITTECH.txt")]
 pub mod ittech_txt {}
 
+#[macro_use]
+// Macro exporting is still weird. I want the macros to be `pub(crate)`, the combination of
+// `#[macro_use]`, the module containing them being lexically first, never importing the macros
+// with `use` and using it as `macro!()` not `$crate::macro!()` seems to work out to that.
 pub mod error;
 
 mod data;

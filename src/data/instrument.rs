@@ -1,15 +1,15 @@
-use super::{DOSFilename, Envelope, Name, Note, RangedU8, Sample};
-use bitflags::bitflags;
+use super::*;
 use std::convert::TryFrom;
 use std::fmt::{self, Debug};
 use std::ops::Index;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Instrument {
     pub header: InstrumentHeader,
     pub samples: Vec<Sample>,
 }
 
+// TODO do not expose header in the public API, move its data into `Instrument` directly
 #[derive(Clone, Debug)]
 pub struct InstrumentHeader {
     /// Instrument Name, null-terminated (but may also contain nulls)
@@ -76,10 +76,6 @@ pub struct InstrumentHeader {
     pub mbank: [u8; 2],
 
     /// Sample / Transpose map
-    // TODO replace with a lookup table where Key (Note) is the index.
-    // [(Key, Value)] just doesn't seem to make sense when every key from 0 to 119 must be present
-    // exactly once anyway. it's understandable that some implementations might not sort it but i
-    // don't expect
     pub sample_map: SampleMap,
 
     /// Volume Envelope
@@ -91,8 +87,6 @@ pub struct InstrumentHeader {
     /// Pitch / Filter Envelope
     pub pitch_filter_envelope: Envelope,
 }
-
-ranged_u8_newtype!(SampleId, 0..=98);
 
 bitflags! {
     /// Move boolean flags out of values.
