@@ -150,8 +150,8 @@ bitflags! {
         /// Keep MPTM sample on disk
         const EXTERNAL_SAMPLE = 1 << (7 + 8);
 
-        // I'm not sure what does this mean yet, but there is a frown next to it in the OpenMPT
-        // codebase so I assume we don't support it or something.
+        // We're not sure what does this mean yet, but there is a frown next to it in the OpenMPT
+        // codebase so we assume we don't support it or something.
         /// MODPlugin :(
         const ADPCM_SAMPLE = 0xFF << 8;
     }

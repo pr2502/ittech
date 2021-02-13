@@ -1,4 +1,4 @@
-//! Error management.
+//! Error management
 //!
 //! This module reimplements/modifies a lot of the default `nom` error behaviour to make it
 //! actually suitable for debugging a binary parser such as this. It may be slower than the nom
@@ -10,6 +10,8 @@ use nom::{Offset, Parser};
 use std::borrow::Cow;
 use std::fmt::{Debug, Write};
 use std::iter;
+
+pub use crate::parser::scan::ScanError;
 
 
 /// This error type accumulates errors and their position when backtracking

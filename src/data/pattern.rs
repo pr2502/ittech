@@ -5,21 +5,26 @@ use std::num::TryFromIntError;
 use std::str;
 
 
+/// Pattern grid
+///
+/// Patterns are represented as a grid of [`Command`]s, this grid is stored as a list of [`Row`]s.
 #[derive(Clone, Debug)]
 pub struct Pattern {
     pub active_channels: ActiveChannels,
     pub rows: Vec<Row>,
 }
 
+/// Pattern row
+///
+/// Row is represented by a sparse vector. It can be iterated or indexed by a [`Channel`].
 #[derive(Clone)]
 pub struct Row {
     map: Vec<(Channel, Command)>,
 }
 
-// TODO replace Row=Vec<Command> with Row=Map<Channel, Command> and remove channel from Command
-// struct. implement this Map as a sorted Vec<(Channel, Command)> internally (don't expose this
-// through the API). make the Map iterable in sorted order.
-
+/// Pattern command
+///
+///
 #[derive(Clone, Debug)]
 pub struct Command {
     pub note: Option<NoteCmd>,
@@ -28,6 +33,7 @@ pub struct Command {
     pub effect: Option<EffectCmd>,
 }
 
+/// Note column commands
 #[derive(Clone, Copy, Debug)]
 pub enum NoteCmd {
     Play(Note),
@@ -36,57 +42,122 @@ pub enum NoteCmd {
     Fade,
 }
 
+/// Note pitch representation
+///
+/// Ranges from C-0 to B-9, only exact pitches can be represented.
 #[derive(Clone, Copy)]
 pub struct Note(u8);
 
 /// Volume column commands
 ///
-/// These commands are not parsed by nibbles and masks like [`EffectCmd`] but by ranges so the
-/// `?xy` notation doesn't make sense here.
-// Documentation for individual commands is adapted from OpenMPT UI.
+/// All parameters are displayed in **decimal**.
 #[derive(Clone, Copy, Debug)]
 pub enum VolumeCmd {
-    /// `v??` Set volume
+    /// `vxx` Set volume
+    ///
+    /// Sets the current note volume to `xx`.
     SetVolume(RangedU8<0, 64>),
 
-    /// `p??` Set panning
+    /// `pxx` Set panning
+    ///
+    /// Sets the current channel's panning possition to `xx`.
     Panning(RangedU8<0, 64>),
 
-    /// `a??` Fine volume up
-    FineVolumeUp(RangedU8<0, 9>),
+    /// `a0x` Fine volume slide up
+    ///
+    /// Functions like `DxF` ([`VolumeSlide::FineUp`]]).
+    ///
+    /// Slides the volume up `x` units on the first tick.
+    ///
+    /// `None` uses the last value, memory is shared with all `Dxy` commands.
+    FineVolumeUp(Option<RangedU8<1, 9>>),
 
-    /// `b??` Fine volume down
-    FineVolumeDown(RangedU8<0, 9>),
+    /// `b0x` Fine volume slide down
+    ///
+    /// Functions like `DFy` ([`VolumeSlide::FineDown`]]).
+    ///
+    /// Slides the volume down `x` units on the first tick.
+    ///
+    /// `None` uses the last value, memory is shared with all `Dxy` commands.
+    FineVolumeDown(Option<RangedU8<1, 9>>),
 
-    /// `c??` Volume slide up
-    VolumeSlideUp(RangedU8<0, 9>),
+    /// `c0x` Volume slide up
+    ///
+    /// Functions like `Dx0` ([`VolumeSlide::Up`]).
+    ///
+    /// Slides the volume up `x` units on all ticks except the first.
+    ///
+    /// `None` uses the last value, memory is shared with all `Dxy` commands.
+    VolumeSlideUp(Option<RangedU8<1, 9>>),
 
-    /// `d??` Volume slide down
-    VolumeSlideDown(RangedU8<0, 9>),
+    /// `d0x` Volume slide down
+    ///
+    /// Functions like `D0y` ([`VolumeSlide::Down`]).
+    ///
+    /// Slides the volume down `x` units on all ticks except the first.
+    ///
+    /// `None` uses the last value, memory is shared with all `Dxy` commands.
+    VolumeSlideDown(Option<RangedU8<1, 9>>),
 
-    /// `e??` Pitch slide down
-    PitchSlideDown(RangedU8<0, 9>),
+    /// `e0x` Portamento down
+    ///
+    /// Similar to `Exx` ([`EffectCmd::PortamentoDown`]).
+    ///
+    /// Compared to `Exx`, parameters are 4 times more coarse (e.g. `e01 == E04`).
+    ///
+    /// `None` uses the last value, memory is shared with `Exx`.
+    PortamentoDown(Option<RangedU8<1, 9>>),
 
-    /// `f??` Pitch slide up
-    PitchSlideUp(RangedU8<0, 9>),
+    /// `f0x` Portamento up
+    ///
+    /// Similar to `Fxx`.
+    ///
+    /// Compared to `Fxx`, parameters are 4 times more coarse (e.g. `f01 == F04`).
+    ///
+    /// `None` uses the last value, memory is shared with `Fxx`.
+    PortamentoUp(Option<RangedU8<1, 9>>),
 
-    /// `g??` Portamento to next note speed
-    Portamento(RangedU8<0, 9>),
+    /// `g0x` Portamento to next note speed
+    ///
+    /// Similar to `Gxx`.
+    ///
+    /// The paramets of `g0x` are mapped to paramets of `Gxx` using the following table.
+    /// `0` and `00` are represented with `None`.
+    /// ```txt
+    ///   g0x   Gxx     g0x   Gxx
+    ///     0    00       5    20
+    ///     1    01       6    40
+    ///     2    04       7    60
+    ///     3    08       8    80
+    ///     4    10       9    FF
+    /// ```
+    ///
+    /// `None` uses the last value, memory is shared with `Gxx`.
+    TonePortamento(Option<RangedU8<1, 9>>),
 
-    /// `h??` Vibrato depth
-    Vibrato(RangedU8<0, 9>),
+    /// `h0x` Vibrato depth
+    ///
+    /// Executes a vibrato with depth `x` and speed from the last `Hxy` or `Uxy` command.
+    ///
+    /// `None` uses the last value, memory is shared with `Hxy` and `Uxy`.
+    Vibrato(Option<RangedU8<1, 9>>),
 }
 
 /// Effect column commands
+///
+/// All parameters are displayed in **hexadecimal**.
 ///
 /// Parameters are parsed by nibbles and masks on them. Each command has one byte of parameter data
 /// to work with. `Axx` means the command `A` uses the whole byte as its argument, `Hxy` means the
 /// command `H` uses the first nibble as parameter `x` and second nibble as parameter `y`.
 ///
 /// Some commands like `D` use masks to further granularize the command, however some commands only
-/// use a subset of the values `u8` can have. Currently handling of out-of-range values in this
-/// crate is inconsistent, feel free to report a bug on inconsistency, ideally all values would be
-/// parsable and interpretable in some way and with methods to canonicalize them.
+/// use a subset of the values `u8` can have.
+///
+/// The parser should be handling of out-of-range values by canonicalizing them into some in range
+/// value and this behaviour should be documented for each value in a "Canonicalization" section.
+/// Parser should never crash because of an out-of-range value and the representation should not
+/// allow for out-of-range values to get through.
 ///
 /// ## Additional resources
 /// - <https://wiki.openmpt.org/Manual:_Effect_Reference>
@@ -96,28 +167,54 @@ pub enum VolumeCmd {
 pub enum EffectCmd {
     /// `Axx` Set Speed
     ///
-    /// *no memory*
-    ///
     /// Sets the module Speed (ticks per row).
-    SetSpeed(u8),
+    ///
+    /// ## Canonicalization
+    /// The value `0` does nothing so the effect command get skipped by the parser.
+    SetSpeed(RangedU8<1, 255>),
 
     /// `Bxx` Jump to Order
+    ///
+    /// Causes playback to jump to pattern position `xx`.
+    ///
+    /// `B00` would restart a song from the beginning (first pattern in the Order List).
+    ///
+    /// If `Cxx` is on the same row, the pattern specified by `Bxx` will be
+    /// the pattern `Cxx` jumps into.
     JumpOrder(u8),
 
     /// `Cxx` Break to row `xx` of next pattern
+    ///
+    /// Jumps to row `xx` of the next pattern in the Order List.
+    ///
+    /// If the current pattern is the last pattern in the Order List, `Cxx` will jump to row `xx`
+    /// of the first pattern.
+    ///
+    /// If `Bxx` is on the same row, the pattern specified by `Bxx` will be
+    /// the pattern `Cxx` jumps into.
+    ///
+    /// Ranges from `0x00` to the next pattern's row length, higher values are to be treated as `0x00`.
     BreakRow(u8),
 
-    /// `Dxx` ...
-    VolumeSlide(VolumeSlide),
+    /// `Dxx` Volume Slide or Fine Volume Slide
+    ///
+    /// Slides the current volume up or down.
+    ///
+    /// `None` uses the last value, memory is shared with `Hxy` and `Uxy`.
+    VolumeSlide(Option<VolumeSlide>),
 
-    /// `Exx` ...
-    PitchSlideDown(PitchSlideDown),
+    /// `Exx`...
+    ///
+    /// `None` uses the last value, memory is shared with the `e0x` volume command.
+    PortamentoDown(Option<Portamento>),
 
-    /// `Fxx` ...
-    PitchSlideUp(PitchSlideUp),
+    /// `Fxx`...
+    ///
+    /// `None` uses the last value, memory is shared with the `f0x` volume command.
+    PortamentoUp(Option<Portamento>),
 
     /// `Gxx` Slide to note with speed `xx`
-    Portamento(u8),
+    TonePortamento(Option<RangedU8<1, 0xFF>>),
 
     /// `Hxy` Vibrato with speed `x`, depth `y`
     Vibrato(RangedU8<0, 0x0F>, RangedU8<0, 0x0F>),
@@ -129,23 +226,27 @@ pub enum EffectCmd {
     Arpeggio(RangedU8<0, 0x0F>, Option<RangedU8<0, 0x0F>>),
 
     /// `Kxx` Dual Command: `H00` & `Dxx`
-    VolumeSlideAndVibrato(VolumeSlide),
+    VolumeSlideAndVibrato(Option<VolumeSlide>),
 
     /// `Lxx` Dual Command: `G00` & `Dxx`
-    VolumeSlideAndPortamento(VolumeSlide),
+    VolumeSlideAndPortamento(Option<VolumeSlide>),
 
-    /// `Mxx` Set channel volume to `xx` (0->40h)
-    // TODO limit range
-    SetChannelVolume(u8),
+    /// `Mxx` Set channel volume to `xx`
+    ///
+    /// Sets the current channel volume, which multiplies all note volumes it encompasses.
+    ///
+    /// ## Canonicalization
+    /// All values above `0x40` are clipped to `0x40`.
+    SetChannelVolume(RangedU8<0, 0x40>),
 
     /// `Nxx` ...
-    ChannelVolumeSlide(ChannelVolumeSlide),
+    ChannelVolumeSlide(Option<VolumeSlide>),
 
     /// `Oxx` Set sample offset to `yxx00h`, `SAy` Set high value of sample offset `yxx00h`
     SetSampleOffset(SetSampleOffset),
 
     /// `Pxx` ...
-    PanningSlide(PanningSlide),
+    PanningSlide(Option<PanningSlide>),
 
     /// `Qxy` Retrigger note every `y` ticks with volume modifier `x`
     ///
@@ -160,14 +261,24 @@ pub enum EffectCmd {
     ///     6: *2/3                 E: *3/2
     ///     7: *1/2                 F: *2
     /// ```
+    ///
+    /// ## Canonicalization
+    /// Value `8` is replaced by `0` during parsing.
     // TODO a reasonable way to express the disjoint interval for `x` in the type?
+    //      maybe just use an enum..
     Retrigger(RangedU8<0, 0x0F>, RangedU8<0, 0x0F>),
 
     /// `Rxy` Tremolo with speed `x`, depth `y`
     Tremolo(RangedU8<0, 0x0F>, RangedU8<0, 0x0F>),
 
     /// `Sxx` ...
-    Set(Set),
+    ///
+    /// `None` uses the last value, memory is shared by all `Sxx` subcommands.
+    ///
+    /// ## Canonicalization
+    /// The second nibble is ignored when parsing the set subcommand, any value in range
+    /// `S00..=S0F` will be parsed as `None`, but it will only be serialized as `S00`.
+    Set(Option<Set>),
 
     /// `Txx` ...
     Tempo(Tempo),
@@ -175,13 +286,16 @@ pub enum EffectCmd {
     /// `Uxy` Fine vibrato with speed `x`, depth `y`
     FineVibrato(RangedU8<0, 0x0F>, RangedU8<0, 0x0F>),
 
-    /// `Vxx` Set global volume to `xx` (0->80h)
+    /// `Vxx` Set global volume to `xx`
+    ///
+    /// ## Canonicalization
+    /// All values above `0x80` are clipped to `0x80`.
     SetGlobalVolume(RangedU8<0, 0x80>),
 
     /// `Wxx` ...
-    GlobalVolumeSlide(GlobalVolumeSlide),
+    GlobalVolumeSlide(Option<VolumeSlide>),
 
-    /// `Xxx` Set panning position (0->0FFh)
+    /// `Xxx` Set panning position
     SetPanningPosition(u8),
 
     /// `Yxy` Panbrello with speed `x`, depth `y`
@@ -191,9 +305,14 @@ pub enum EffectCmd {
     MIDI(u8),
 }
 
-/// TODO
+/// Effect category
+///
+/// OpenMPT categorizes effects into groups which are then used in the UI for color highlighting.
+/// These don't have any effect on parsing and are purely determined from the effect code.
+///
+/// Categorization is taken from OpenMPT wiki.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum EffectType {
+pub enum EffectCategory {
     GlobalTiming,
     GlobalPattern,
     Volume,
@@ -202,80 +321,73 @@ pub enum EffectType {
     Misc,
 }
 
-/// Effect `Dxx` ...
+/// Effects `Dxx`, `Kxx`, `Lxx`, `Nxx`, `Wxx` ...
+///
+/// All of these commands perform a volume slide but on different mixers.
+///
+/// - `Dxx`, `Kxx`, `Lxx` - note volume slide
+/// - `Nxx` - channel volume slide
+/// - `Wxx` - global volume slide
+///
+/// ## Canonicalization
+/// Values where both nibbles are in `1..=0xE` at the same time don't have a defined meaning, these
+/// get skipped by the parser.
+///
+/// TODO describe volume slide units
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum VolumeSlide {
-    /// `D00` Reuse the previous value
-    // TODO figure out which "previous values" are shared between which effects and what flags
-    // affect it, there are some mentions in ITTECH.TXT but the naming is inconsistent.
-    Continue,
-
-    /// `D0x` Volume slide down by `x`
+    /// `D0x`, `K0x`, `L0x`, `N0x`, `W0x` Volume slide down by `x`
+    ///
+    /// Decreases mixer volume by `x` units on every tick of the row except the first.
+    /// If `x` is `0xF`, volume decreases on every tick (including the first).
     Down(RangedU8<1, 0x0F>),
 
-    /// `Dx0` Volume slide up by `x`
+    /// `Dx0`, `Kx0`, `Lx0`, `Nx0`, `Wx0` Volume slide up by `x`
+    ///
+    /// Increases mixer volume by `x` units on every tick of the row except the first.
+    /// Volume will not exceed `0x40`.
     Up(RangedU8<1, 0x0F>),
 
-    /// `DFx` Fine volume slide down by `x`
-    FineDown(RangedU8<1, 0x0F>),
+    /// `DFx`, `KFx`, `LFx`, `NFx`, `WFx` Fine volume slide down by `x`
+    ///
+    /// Finely decreases mixer volume by only applying `x` units on the first tick of the row.
+    FineDown(RangedU8<1, 0x0E>),
 
-    /// `DxF` Fine volume slide up by `x`
-    FineUp(RangedU8<1, 0x0E>),
-
-    /// `Dxx` Catchall when the other variants don't make sense.
-    Other(u8),
+    /// `DxF`, `KxF`, `LxF`, `NxF`, `WxF` Fine volume slide up by `x`
+    ///
+    /// Finely increases mixer volume by only applying `x` units on the first tick of the row.
+    ///
+    /// OpenMPT documents that this value cannot be `0xF` however both OpenMPT and Schism Tracker
+    /// parse it this way so we allow it too.
+    FineUp(RangedU8<1, 0x0F>),
 }
 
-/// Effect `Exx` ...
+/// Effects `Exx`, `Fxx` ...
+///
+/// Portamento down or up in coarse, fine or extra fine steps.
+///
+/// TODO describe frequency units
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum PitchSlideDown {
-    /// `Exx` Pitch slide down by `xx`
-    // 0xDF is the highest parameter value not matched by the following two effects, therefore I
+pub enum Portamento {
+    /// `Exx`, `Fxx` Pitch slide down/up by `xx`
+    ///
+    /// Decreases/increases current note pitch by `xx` units on every tick of the row except the
+    /// first.
+    // 0xDF is the highest parameter value not matched by the following two effects, therefore we
     // assume it's divided up into ranges.
-    Coarse(RangedU8<0, 0xDF>),
+    Coarse(RangedU8<1, 0xDF>),
 
-    /// `EFx` Fine pitch slide down by `x`
+    /// `EFx`, `FFx` Fine pitch slide down/up by `x`
+    ///
+    /// Finely decreases/increases note pitch by only applying `x` units on the first tick of the
+    /// row.
     Fine(RangedU8<0, 0x0F>),
 
-    /// `EEx` Extra fine pitch slide down by `x`
+    /// `EEx`, `FEx` Extra fine pitch slide down/up by `x`
+    ///
+    /// Extra-finely decreases/increases note pitch by applying with 4 times the precision of
+    /// `EFx`/`FFx` ([`Portamento::Fine`]).
     ExtraFine(RangedU8<0, 0x0F>),
-}
-
-/// Effect `Fxx` ...
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum PitchSlideUp {
-    /// `Fxx` Pitch slide up by `xx`
-    // 0xDF is the highest parameter value not matched by the following two effects, therefore I
-    // assume it's divided up into ranges.
-    Coarse(RangedU8<0, 0xDF>),
-
-    /// `FFx` Fine pitch slide up by `x`
-    Fine(RangedU8<0, 0x0F>),
-
-    /// `FEx` Extra fine pitch slide up by `x`
-    ExtraFine(RangedU8<0, 0x0F>),
-}
-
-/// Effect `Nxx` ...
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ChannelVolumeSlide {
-    /// `N00` Reuse the previous value
-    Continue,
-
-    /// `N0x` Channel volume slide down by `x`
-    Down(RangedU8<1, 0x0F>),
-
-    /// `Nx0` Channel volume slide up by `x`
-    Up(RangedU8<1, 0x0F>),
-
-    /// `NFx` Fine channel volume slide down by `x`
-    FineDown(RangedU8<1, 0x0F>),
-
-    /// `NxF` Fine channel volume slide up by `x`
-    FineUp(RangedU8<1, 0x0E>),
-
-    /// `Nxx` Catchall when the other variants don't make sense.
-    Other(u8),
 }
 
 /// Effects `Oxx` and `SAy` combined
@@ -289,11 +401,12 @@ pub enum SetSampleOffset {
 }
 
 /// Effect `Pxx` ...
+///
+/// ## Canonicalization
+/// Values where both nibbles are in `1..=0xE` at the same time don't have a defined meaning, these
+/// get skipped by the parser.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PanningSlide {
-    /// `P00` Reuse the previous value
-    Continue,
-
     /// `P0x` Panning slide to right by `x`
     Right(RangedU8<1, 0x0F>),
 
@@ -305,9 +418,6 @@ pub enum PanningSlide {
 
     /// `PxF` Fine panning slide to left by `x`
     FineLeft(RangedU8<0, 0x0F>),
-
-    /// `Pxx` Catchall when the other variants don't make sense.
-    Other(u8),
 }
 
 /// Effect `Sxx` ...
@@ -317,16 +427,9 @@ pub enum PanningSlide {
 /// All the `Sxx` commands share the same memory, this should include the `SAy` command.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Set {
-    /// `S00` Continue
-    ///
-    /// ## Canonicalization
-    /// Value of the second nibble is ignored, any value in range `S00..=S0F` will be parsed as
-    /// this, but it will only be serialized as `S00`.
-    Continue,
-
     // Schism Tracker and OpenMPT (IT Effects) documentation disagree on this one. OpenMPT says
-    // `S00` recalls `Sxx` command memory but Schism Tracker says `S0x` sets filter, it is however
-    // marked red which means (*TODO does it?*) it's not supported.
+    // `S00` recalls `Sxx` command memory but Schism Tracker says `S0x` sets filter, it is marked
+    // in red which probably means we don't need to worry about it, at least for now.
     //
     // /// `S0x` Set filter
     // Filter(RangedU8<1, 0x0F>),
@@ -351,16 +454,25 @@ pub enum Set {
     Finetune(RangedU8<0, 0x0F>),
 
     /// `S3x` Set vibrato waveform to type `x`
+    ///
+    /// Sets the waveform of future [`Vibrato`](EffectCmd::Vibrato) effects.
     VibratoWaveform(Waveform),
 
     /// `S4x` Set tremolo waveform to type `x`
+    ///
+    /// Sets the waveform of future [`Tremolo`](EffectCmd::Tremolo) effects.
     TremoloWaveform(Waveform),
 
     /// `S5x` Set panbrello waveform to type `x`
+    ///
+    /// Sets the waveform of future [`Panbrello`](EffectCmd::Panbrello) effects.
     PanbrelloWaveform(Waveform),
 
     /// `S6x` Pattern delay for `x` ticks
-    PatternDelay(RangedU8<0, 0x0F>),
+    ///
+    /// Extends the current row by `x` ticks. If multiple `S6x` commands are on the same row, the
+    /// sum of their parameters is used.
+    PatternTickDelay(RangedU8<0, 0x0F>),
 
     /// `S70`, `S71`, `S72` Past note cut, off or fade
     PastNote(SetPastNote),
@@ -433,17 +545,29 @@ pub enum Set {
     MIDIParam(RangedU8<0, 0x0F>),
 }
 
-/// Waveforms for commands `S3x`, `S4x` and `S5x`
+/// Oscillator waveforms for commands `S3x`, `S4x` and `S5x`
 ///
-/// - __0__ - Sine wave
-/// - __1__ - Ramp down
-/// - __2__ - Square wave
-/// - __3__ - Random wave
+/// IT retriggers the waveforms for each note - they start playing from their starting point when a
+/// new note is played.
+///
+/// Every oscillator waveform is 64 points long, and the speed parameter denotes by how many points
+/// per tick the play position is advanced. So at a vibrato speed of 2, the vibrato waveform
+/// repeats after 32 ticks.
+///
+/// ## Canonicalization
+/// The valid values for waveforms are `0..=3`, all out-of-range values are parsed as `3`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Waveform {
+    /// Sine wave `0`
     Sine,
-    RampDown,
+
+    /// Sawtooth (ramp-down) wave `1`
+    Sawtooth,
+
+    /// Square wave `2`
     Square,
+
+    /// White noise `3`
     Random,
 }
 
@@ -515,30 +639,9 @@ pub enum Tempo {
     Set(RangedU8<0x20, 0xFF>),
 }
 
-/// Effect `Wxx` ...
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum GlobalVolumeSlide {
-    /// `W00` Reuse the previous value
-    Continue,
-
-    /// `W0x` Global volume slide down by `x`
-    Down(RangedU8<1, 0x0F>),
-
-    /// `Wx0` Global volume slide up by `x`
-    Up(RangedU8<1, 0x0F>),
-
-    /// `WFx` Fine global volume slide down by `x`
-    FineDown(RangedU8<1, 0x0F>),
-
-    /// `WxF` Fine global volume slide up by `x`
-    FineUp(RangedU8<1, 0x0E>),
-
-    /// `Wxx` Catchall when the other variants don't make sense.
-    Other(u8),
-}
-
 
 impl Row {
+    /// Create new empty row
     pub const fn empty() -> Row {
         Row { map: Vec::new() }
     }
@@ -580,7 +683,6 @@ impl Get<Channel> for Row {
 impl_index_from_get!(Row, Channel);
 
 
-
 impl TryFrom<u8> for Note {
     type Error = TryFromIntError;
     fn try_from(raw: u8) -> Result<Self, Self::Error> {
@@ -602,26 +704,37 @@ impl From<Note> for u8 {
     }
 }
 
-fn note_string(Note(idx): Note) -> [u8; 3] {
+/// Creates a formatted string for the note in the given buffer
+const fn note_string(Note(idx): Note, buf: &mut [u8; 3]) -> &str {
+    if idx >= 120 {
+        panic!("Note inner value is out of range of 0..=119");
+    }
     const NAMES: [&[u8; 2]; 12] = [b"C-", b"C#", b"D-", b"D#", b"E-", b"F-", b"F#", b"G-", b"G#", b"A-", b"A#", b"B-"];
     let name = NAMES[(idx % 12) as usize];
     let octave = b'0' + (idx / 12);
-    [name[0], name[1], octave]
+    buf[0] = name[0];
+    buf[1] = name[1];
+    buf[2] = octave;
+    // SAFETY This function fills the buffer with valid UTF-8 itself.
+    unsafe { str::from_utf8_unchecked(&*buf) }
 }
 
 impl Debug for Note {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(str::from_utf8(&note_string(*self)).unwrap())
+        let mut buf = [0; 3];
+        f.write_str(note_string(*self, &mut buf))
     }
 }
 
 impl Display for Note {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(str::from_utf8(&note_string(*self)).unwrap())
+        let mut buf = [0; 3];
+        f.write_str(note_string(*self, &mut buf))
     }
 }
 
 impl Note {
+    /// Convert note into its frequency in A=440Hz tuning
     pub fn freq(&self) -> f32 {
         let (Note(idx), Note(base)) = (*self, Note::A_4);
         let exp = ((idx as f32) - (base as f32)) / 12.0f32;
@@ -659,4 +772,75 @@ define_notes! {
     C_7, Cs7, D_7, Ds7, E_7, F_7, Fs7, G_7, Gs7, A_7, As7, B_7,
     C_8, Cs8, D_8, Ds8, E_8, F_8, Fs8, G_8, Gs8, A_8, As8, B_8,
     C_9, Cs9, D_9, Ds9, E_9, F_9, Fs9, G_9, Gs9, A_9, As9, B_9,
+}
+
+
+impl VolumeCmd {
+    pub fn category(&self) -> EffectCategory {
+        match self {
+            VolumeCmd::FineVolumeUp(_) |
+            VolumeCmd::FineVolumeDown(_) |
+            VolumeCmd::VolumeSlideUp(_) |
+            VolumeCmd::VolumeSlideDown(_) |
+            VolumeCmd::SetVolume(_)
+                => EffectCategory::Volume,
+
+            VolumeCmd::PortamentoDown(_) |
+            VolumeCmd::PortamentoUp(_) |
+            VolumeCmd::TonePortamento(_) |
+            VolumeCmd::Vibrato(_)
+                => EffectCategory::Pitch,
+
+            VolumeCmd::Panning(_)
+                => EffectCategory::Panning,
+        }
+    }
+}
+
+impl EffectCmd {
+    pub fn category(&self) -> EffectCategory {
+        match self {
+            EffectCmd::SetSpeed(_) |
+            EffectCmd::Tempo(_)
+                => EffectCategory::GlobalTiming,
+
+            EffectCmd::JumpOrder(_) |
+            EffectCmd::BreakRow(_) |
+            EffectCmd::Set(Some(Set::PatternTickDelay(_))) |
+            EffectCmd::Set(Some(Set::LoopbackPoint)) |
+            EffectCmd::Set(Some(Set::LoopbackTimes(_))) |
+            EffectCmd::Set(Some(Set::PatternRowDelay(_)))
+                => EffectCategory::GlobalPattern,
+
+            EffectCmd::VolumeSlide(_) |
+            EffectCmd::Tremor(_, _) |
+            EffectCmd::SetChannelVolume(_) |
+            EffectCmd::ChannelVolumeSlide(_) |
+            EffectCmd::Tremolo(_, _) |
+            EffectCmd::Set(Some(Set::TremoloWaveform(_))) |
+            EffectCmd::SetGlobalVolume(_) |
+            EffectCmd::GlobalVolumeSlide(_)
+                => EffectCategory::Volume,
+
+            EffectCmd::PortamentoDown(_) |
+            EffectCmd::PortamentoUp(_) |
+            EffectCmd::TonePortamento(_) |
+            EffectCmd::Vibrato(_, _) |
+            EffectCmd::Arpeggio(_, _) |
+            EffectCmd::Set(Some(Set::Glissando(_))) |
+            EffectCmd::Set(Some(Set::Finetune(_))) |
+            EffectCmd::Set(Some(Set::VibratoWaveform(_))) |
+            EffectCmd::Set(Some(Set::PanbrelloWaveform(_))) |
+            EffectCmd::FineVibrato(_, _)
+                => EffectCategory::Pitch,
+
+            EffectCmd::PanningSlide(_) |
+            EffectCmd::Set(Some(Set::Panning(_))) |
+            EffectCmd::SetPanningPosition(_) |
+            EffectCmd::Panbrello(_, _)
+                => EffectCategory::Panning,
+
+            _ => EffectCategory::Misc,
+        }
+    }
 }

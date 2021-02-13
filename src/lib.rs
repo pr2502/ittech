@@ -1,3 +1,6 @@
+#![feature(const_mut_refs)]
+#![feature(const_panic)]
+#![feature(const_str_from_utf8_unchecked)]
 #![feature(external_doc)]
 
 //! # Impulse Tracker module file parser and writer
@@ -17,7 +20,7 @@
 pub mod ittech_txt {}
 
 #[macro_use]
-// Macro exporting is still weird. I want the macros to be `pub(crate)`, the combination of
+// Macro exporting is still weird. We want the macros to be `pub(crate)`, the combination of
 // `#[macro_use]`, the module containing them being lexically first, never importing the macros
 // with `use` and using it as `macro!()` not `$crate::macro!()` seems to work out to that.
 pub mod error;
@@ -27,3 +30,5 @@ pub use data::*;
 
 pub mod parser;
 pub mod writer;
+
+pub use parser::scan::FileType;
