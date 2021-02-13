@@ -1,3 +1,7 @@
+//! Parsing functions
+//!
+//!
+
 use crate::data::*;
 use crate::error::ContextError;
 use bitflags::bitflags;
@@ -13,15 +17,17 @@ use std::convert::{TryFrom, TryInto};
 
 
 mod pattern;
+pub(crate) mod scan;
 mod util;
 
 use util::*;
+pub use scan::scan;
 
 
 /// Parse Impulse Tracker module file (.it)
 pub fn module<'i, E>(input: &'i [u8]) -> Result<Module, Err<E>>
 where
-    E: ParseError<&'i [u8]> + ContextError<&'i [u8]>,
+    E: ParseError<&'i [u8]> + ContextError<&'i [u8]> + 'static,
 {
     let (_, header) = module_header(input)?;
 

@@ -26,9 +26,9 @@ bitflags! {
         const SUSTAIN = 1 << 2;
 
         // These are not mentioned in ITTECH.TXT and there are no comment in OpenMPT, documentation
-        // here is just my assumption.
+        // here is just our assumption.
         //
-        // I assume CARRY is for the carry button in Instrument configuration in OpenMPT.
+        // We assume CARRY is for the carry button in Instrument configuration in OpenMPT.
         const CARRY = 1 << 3;
         // Filter is probably only useful on a pitch envelope and makes it act like a filter
         // envelope instead.
@@ -42,8 +42,8 @@ pub struct Node {
     pub tick: u16,
 }
 
-// TODO is the loop an inclusive "interval"? that is, is the node marked as `end` used in the loop?
-// my guess would be yes, but check with OpenMPT code or interface first
+// TODO Is the loop an inclusive "interval"? That is, is the node marked as `end` used in the loop?
+//      Our guess would be yes, but check with OpenMPT code or interface first.
 #[derive(Clone, Debug)]
 pub struct EnvelopeLoop {
     /// Start - offset of the node
