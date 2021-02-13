@@ -328,7 +328,7 @@ fn effect<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(
                         // save them into memory before ignoring them, which means all recall
                         // commands (e.g. `D00`) would also get ignored by ST until a valid command
                         // is played. This inconsistency makes our API much cleaner and since these
-                        // values are "invalid" anyway it should create much problems.
+                        // values are "invalid" anyway it shouldn't create any problems.
                         //
                         // TODO In the future we want to emit a warning when an out-of-range value
                         //      is detected and gets converted to something else.
@@ -359,7 +359,7 @@ fn effect<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(
                 'G' => EffectCmd::TonePortamento((param > 0).then(|| param.cast())),
                 'H' => EffectCmd::Vibrato(x.cast(), y.cast()),
                 'I' => EffectCmd::Tremor(x.cast(), y.cast()),
-                'J' => EffectCmd::Arpeggio(x.cast(), (y != x).then(|| y.cast())),
+                'J' => EffectCmd::Arpeggio((param > 0).then(|| (x.cast(), y.cast()))),
                 // 'K' and 'L' are handled together with 'D' above.
                 'M' => EffectCmd::SetChannelVolume(
                     // Clipping the value to the allowed maximum.
@@ -541,7 +541,7 @@ mod test {
             EffectCmd::Tremor(1.cast(), 5.cast()),
 
             // J
-            EffectCmd::Arpeggio(2.cast(), Some(3.cast())),
+            EffectCmd::Arpeggio(Some((2.cast(), 3.cast()))),
 
             // K
             EffectCmd::VolumeSlideAndVibrato(Some(VolumeSlide::Down(1.cast()))),

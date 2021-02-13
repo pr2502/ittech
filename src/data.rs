@@ -46,7 +46,9 @@ macro_rules! ranged_u8_newtype {
     };
 }
 
-
+// TODO We're already using range-limited opaque numbers for the IDs, ideally we'd be also
+//      versioning them (like <https://crates.io/crates/slotmap>) to make sure we always catch
+//      nonsensical values both during parsing and during serialization.
 ranged_u8_newtype!(InstrumentId, 0..=98);
 ranged_u8_newtype!(PatternId, 0..=199);
 ranged_u8_newtype!(SampleId, 0..=98);

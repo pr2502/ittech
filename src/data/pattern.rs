@@ -5,12 +5,26 @@ use std::num::TryFromIntError;
 use std::str;
 
 
-/// Pattern grid
+/// Pattern
 ///
-/// Patterns are represented as a grid of [`Command`]s, this grid is stored as a list of [`Row`]s.
+/// Each pattern is represented by a table, consisting of rows (time) and columns (simultaneously
+/// playing channels). Patterns contain note data for triggering samples (instruments), but they
+/// can also contain effect commands that change global, local or channel-local playback
+/// parameters.
+///
+/// Patterns are stored as a list of [`Row`]s.
+///
+/// **This API will change in the future because it doesn't impose the invariant that
+/// `active_channels` and `rows` stay in sync.**
 #[derive(Clone, Debug)]
 pub struct Pattern {
+    /// Active channels
+    ///
+    /// Channel is active if it contains any command in any row of the pattern. Currently skipping
+    /// rows with effects is not accounted for.
     pub active_channels: ActiveChannels,
+
+    /// Pattern rows
     pub rows: Vec<Row>,
 }
 
@@ -24,7 +38,7 @@ pub struct Row {
 
 /// Pattern command
 ///
-///
+/// Command is one cell on the pattern table.
 #[derive(Clone, Debug)]
 pub struct Command {
     pub note: Option<NoteCmd>,
@@ -132,7 +146,8 @@ pub enum VolumeCmd {
     ///     4    10       9    FF
     /// ```
     ///
-    /// `None` uses the last value, memory is shared with `Gxx`.
+    /// `None` uses the last value.
+    // TODO is memory is shared with `Gxx`?
     TonePortamento(Option<RangedU8<1, 9>>),
 
     /// `h0x` Vibrato depth
@@ -214,7 +229,15 @@ pub enum EffectCmd {
     PortamentoUp(Option<Portamento>),
 
     /// `Gxx` Slide to note with speed `xx`
+    ///
+    /// `None` uses the last value.
     TonePortamento(Option<RangedU8<1, 0xFF>>),
+
+    // TODO How does memory recall work for Vibrato and Tremor?
+    //      Schism Tracker seems to be tracking each parameter separately, including their memory,
+    //      and the Tremor effect is doing something weird, even their comments suggest they don't
+    //      understand it properly and have adopted the code from somewhere else. Investigate.
+    //      What does OpenMPT do?
 
     /// `Hxy` Vibrato with speed `x`, depth `y`
     Vibrato(RangedU8<0, 0x0F>, RangedU8<0, 0x0F>),
@@ -223,7 +246,17 @@ pub enum EffectCmd {
     Tremor(RangedU8<0, 0x0F>, RangedU8<0, 0x0F>),
 
     /// `Jxy` Arpeggio with halftones `x` and `y`
-    Arpeggio(RangedU8<0, 0x0F>, Option<RangedU8<0, 0x0F>>),
+    ///
+    /// Plays an arpeggiation of three notes in one row, cycling between the current note, current
+    /// note + `x` semitones, and current note + `y` semitones.
+    ///
+    /// `None` uses the last value.
+    // NOTE We remember reading somewhere (even the code had it that way) that the arpeggiation was
+    //      only between two notes if `x == y`. Now we can't find it either on the OpenMPT wiki
+    //      Effect Reference page, nor in OpenMPT or Schism Tracker source code.
+    //      This might be just misremembering but we'll be leaving this note here for now in case
+    //      somebody finds somewhere mentioning that thing. Sorry.
+    Arpeggio(Option<(RangedU8<0, 0x0F>, RangedU8<0, 0x0F>)>),
 
     /// `Kxx` Dual Command: `H00` & `Dxx`
     VolumeSlideAndVibrato(Option<VolumeSlide>),
@@ -264,8 +297,7 @@ pub enum EffectCmd {
     ///
     /// ## Canonicalization
     /// Value `8` is replaced by `0` during parsing.
-    // TODO a reasonable way to express the disjoint interval for `x` in the type?
-    //      maybe just use an enum..
+    // TODO Find a reasonable way to express the disjoint interval for `x` in the type.
     Retrigger(RangedU8<0, 0x0F>, RangedU8<0, 0x0F>),
 
     /// `Rxy` Tremolo with speed `x`, depth `y`
@@ -826,7 +858,7 @@ impl EffectCmd {
             EffectCmd::PortamentoUp(_) |
             EffectCmd::TonePortamento(_) |
             EffectCmd::Vibrato(_, _) |
-            EffectCmd::Arpeggio(_, _) |
+            EffectCmd::Arpeggio(_) |
             EffectCmd::Set(Some(Set::Glissando(_))) |
             EffectCmd::Set(Some(Set::Finetune(_))) |
             EffectCmd::Set(Some(Set::VibratoWaveform(_))) |
