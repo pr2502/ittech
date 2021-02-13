@@ -6,6 +6,7 @@ use std::iter::FromIterator;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign};
 
 
+/// Channel number
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
 pub struct Channel(RangedU8<0, 63>);
 
@@ -36,7 +37,7 @@ impl Debug for Channel {
 }
 
 
-/// Mask representing active channels in a particular pattern or module.
+/// Active channels in a particular pattern or module.
 #[derive(Clone, Copy, PartialEq)]
 pub struct ActiveChannels(u64);
 

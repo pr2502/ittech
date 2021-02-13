@@ -1,9 +1,14 @@
 [package]
 name = "ittech"
 version = "0.1.0"
-description = "Impulse Tracker file parser and writer"
 authors = []
 edition = "2018"
+
+description = "Impulse Tracker file parser and writer"
+readme = "README.md"
+homepage = "https://github.com/ametisf/ittech"
+repository = "https://github.com/ametisf/ittech"
+license = "GPL-3.0-or-later"
 
 [dependencies]
 bitflags = "1.2"
