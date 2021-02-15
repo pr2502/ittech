@@ -1,6 +1,4 @@
 //! Parsing functions
-//!
-//!
 
 use crate::data::*;
 use crate::error::ContextError;
@@ -8,7 +6,6 @@ use bitflags::bitflags;
 use nom::bytes::complete::{tag, take};
 use nom::combinator::{all_consuming, map};
 use nom::error::{ErrorKind, ParseError};
-use nom::multi::{count, many_till};
 use nom::number::complete::{be_i16, le_i16, le_i8, le_u16, le_u32, le_u8};
 use nom::sequence::tuple;
 use nom::{Err, IResult};
@@ -20,6 +17,8 @@ mod pattern;
 pub(crate) mod scan;
 mod util;
 
+pub use pattern::parse_effect as effect;
+
 use util::*;
 pub use scan::scan;
 
@@ -27,7 +26,7 @@ pub use scan::scan;
 /// Parse Impulse Tracker module file (.it)
 pub fn module<'i, E>(input: &'i [u8]) -> Result<Module, Err<E>>
 where
-    E: ParseError<&'i [u8]> + ContextError<&'i [u8]> + 'static,
+    E: ParseError<&'i [u8]> + ContextError<&'i [u8]> + 'i,
 {
     let (_, header) = module_header(input)?;
 

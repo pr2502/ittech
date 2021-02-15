@@ -1,7 +1,6 @@
 use crate::error::ContextError;
 use nom::bytes::complete::take;
 use nom::error::{make_error, ErrorKind, ParseError};
-use nom::multi::count;
 use nom::Err::Error;
 use nom::{IResult, Parser};
 use std::convert::{TryFrom, TryInto};
@@ -10,21 +9,19 @@ use std::ops::RangeBounds;
 
 
 /// Helper trait for `.try_into().unwrap()` for cases where a panic is meant to be a bug.
-pub(crate) trait Cast<T> {
-    fn cast(self) -> T;
-}
-
-impl<F, T> Cast<T> for F
-where
-    T: TryFrom<F>,
-    <T as TryFrom<F>>::Error: std::fmt::Debug,
-{
+pub(crate) trait Cast {
     #[track_caller]
-    fn cast(self) -> T {
-        self.try_into().unwrap()
+    fn cast<T>(self) -> T
+    where
+        Self: Sized,
+        T: TryFrom<Self>,
+        <T as TryFrom<Self>>::Error: std::fmt::Debug,
+    {
+        T::try_from(self).unwrap()
     }
 }
 
+impl<T> Cast for T {}
 
 /// Consumes N bytes and returns the result as an array.
 pub fn byte_array<'i, E: ParseError<&'i [u8]>, const N: usize>(input: &'i [u8]) -> IResult<&'i [u8], [u8; N], E> {
@@ -133,4 +130,85 @@ where
         }
         Ok((input, acc))
     }
+}
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// XXX TODO FIXME NOTE
+//
+// Polyfills for `nom`s `alloc` feature
+//
+// We wan't the `alloc` feature but we don't want the `bitvec` feature which at this time causes
+// the build to fail. We can remove these once `bitvec` gets fixed and/or updated in `nom` or once
+// `nom`s feature definitions get fixed to the point that `alloc` doesn't pull in `bitvec` with it.
+//
+// These functions are copied almost verbatim from `nom` v6.1.0
+//
+
+use nom::Err;
+
+pub fn count<I, O, E, F>(mut f: F, count: usize) -> impl FnMut(I) -> IResult<I, Vec<O>, E>
+where
+  I: Clone + PartialEq,
+  F: Parser<I, O, E>,
+  E: ParseError<I>,
+{
+  move |i: I| {
+    let mut input = i.clone();
+    let mut res = Vec::with_capacity(count);
+
+    for _ in 0..count {
+      let input_ = input.clone();
+      match f.parse(input_) {
+        Ok((i, o)) => {
+          res.push(o);
+          input = i;
+        }
+        Err(Err::Error(e)) => {
+          return Err(Err::Error(E::append(i, ErrorKind::Count, e)));
+        }
+        Err(e) => {
+          return Err(e);
+        }
+      }
+    }
+
+    Ok((input, res))
+  }
+}
+
+pub fn many_till<I, O, P, E, F, G>(
+  mut f: F,
+  mut g: G,
+) -> impl FnMut(I) -> IResult<I, (Vec<O>, P), E>
+where
+  I: Clone + PartialEq,
+  F: Parser<I, O, E>,
+  G: Parser<I, P, E>,
+  E: ParseError<I>,
+{
+  move |mut i: I| {
+    let mut res = Vec::new();
+    loop {
+      match g.parse(i.clone()) {
+        Ok((i1, o)) => return Ok((i1, (res, o))),
+        Err(Err::Error(_)) => {
+          match f.parse(i.clone()) {
+            Err(Err::Error(err)) => return Err(Err::Error(E::append(i, ErrorKind::ManyTill, err))),
+            Err(e) => return Err(e),
+            Ok((i1, o)) => {
+              // loop trip must always consume (otherwise infinite loops)
+              if i1 == i {
+                return Err(Err::Error(E::from_error_kind(i1, ErrorKind::ManyTill)));
+              }
+
+              res.push(o);
+              i = i1;
+            }
+          }
+        }
+        Err(e) => return Err(e),
+      }
+    }
+  }
 }

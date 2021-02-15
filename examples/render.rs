@@ -1,9 +1,10 @@
 #![feature(or_patterns)]
 
 use anyhow::{Context, Result};
-use ittech::error::VerboseError;
+use ittech::error::{convert_error, VerboseError};
 use ittech::parser;
 use ittech::{ActiveChannels, Command, Module, Note, NoteCmd, Sample};
+use nom::Err;
 use std::{env, fs, iter};
 
 const USAGE: &str = "usage: cargo run --example render -- <itmodule> <outputwav>";
@@ -14,10 +15,14 @@ fn main() -> Result<()> {
 
     let data = fs::read(&inpname)
         .with_context(|| format!("failed to read file {}", &inpname))?;
-    // leaking because we need `data` to be able to leave main on error,
-    //   this is just an example, don't do this in real programs
-    let module = parser::module::<VerboseError<_>>(Box::leak(data.into_boxed_slice()))
-        .context("failed to parse data")?;
+    let module = match parser::module::<VerboseError<_>>(&data) {
+        Ok(module) => module,
+        Err(Err::Error(e)) | Err(Err::Failure(e)) => {
+            eprintln!("parser failed\n\n{}", convert_error(&data, e));
+            return Ok(());
+        }
+        _ => unreachable!(),
+    };
 
     let buffer = render(module).context("failed to render file")?;
 
@@ -79,9 +84,8 @@ fn render(module: Module) -> Result<Vec<f32>> {
     let samples_per_row = SR * 60 / 4 / (module.tempo.as_u8() as usize);
 
     let mut buffer = vec![0.0f32; total_rows * samples_per_row];
-    let mut generators = iter::from_fn(|| Some(None))
-        .take(ActiveChannels::all().count())
-        .collect::<Vec<_>>();
+    const NONE: Option<Box<dyn Iterator<Item=f32>>> = None;
+    let mut generators = [NONE; ActiveChannels::all().count()];
 
     module.ordered_patterns()
         .flat_map(|pat| pat.rows.iter())
