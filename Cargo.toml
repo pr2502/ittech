@@ -1,6 +1,6 @@
 [package]
 name = "ittech"
-version = "0.1.0"
+version = "0.1.1"
 authors = []
 edition = "2018"
 
@@ -12,7 +12,7 @@ license = "GPL-3.0-or-later"
 
 [dependencies]
 bitflags = "1.2"
-nom = "6.0"
+nom = { version = "6.1", default-features = false }
 
 [dev-dependencies]
 anyhow = "1.0"

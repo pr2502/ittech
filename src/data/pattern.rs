@@ -218,50 +218,114 @@ pub enum EffectCmd {
     /// `None` uses the last value, memory is shared with `Hxy` and `Uxy`.
     VolumeSlide(Option<VolumeSlide>),
 
-    /// `Exx`...
+    /// `Exx` Portamento down
+    ///
+    /// See [`Portamento`] for more details.
     ///
     /// `None` uses the last value, memory is shared with the `e0x` volume command.
     PortamentoDown(Option<Portamento>),
 
-    /// `Fxx`...
+    /// `Fxx` Portamento up
+    ///
+    /// See [`Portamento`] for more details.
     ///
     /// `None` uses the last value, memory is shared with the `f0x` volume command.
     PortamentoUp(Option<Portamento>),
 
     /// `Gxx` Slide to note with speed `xx`
     ///
+    /// Slides the pitch of the previous note towards the current note by `xx` units on every tick
+    /// of the row except the first.
+    ///
+    /// Slide can be either smooth or semitone-wise, see [`Special::SetGlissando`] for details.
+    ///
     /// `None` uses the last value.
+    // TODO describe frequency units
     TonePortamento(Option<RangedU8<1, 0xFF>>),
 
-    // TODO How does memory recall work for Vibrato and Tremor?
-    //      Schism Tracker seems to be tracking each parameter separately, including their memory,
-    //      and the Tremor effect is doing something weird, even their comments suggest they don't
-    //      understand it properly and have adopted the code from somewhere else. Investigate.
-    //      What does OpenMPT do?
-
     /// `Hxy` Vibrato with speed `x`, depth `y`
-    Vibrato(RangedU8<0, 0x0F>, RangedU8<0, 0x0F>),
+    ///
+    /// Executes vibrato with speed `x` and depth `y` on the current note.
+    ///
+    /// Modulates with selected vibrato waveform [`Special::SetVibratoWaveform`].
+    ///
+    /// `None` uses the last value, each parameter has its separate memory.
+    /// Memory is shared with `Uxy`.
+    Vibrato(Option<RangedU8<1, 0x0F>>, Option<RangedU8<1, 0x0F>>),
 
     /// `Ixy` Tremor with ontime `x` and offtime `y`
-    Tremor(RangedU8<0, 0x0F>, RangedU8<0, 0x0F>),
+    ///
+    /// `None` uses the last value.
+    Tremor(Option<(RangedU8<1, 0x0F>, RangedU8<1, 0x0F>)>),
 
     /// `Jxy` Arpeggio with halftones `x` and `y`
     ///
     /// Plays an arpeggiation of three notes in one row, cycling between the current note, current
     /// note + `x` semitones, and current note + `y` semitones.
     ///
-    /// `None` uses the last value.
-    // NOTE We remember reading somewhere (even the code had it that way) that the arpeggiation was
-    //      only between two notes if `x == y`. Now we can't find it either on the OpenMPT wiki
-    //      Effect Reference page, nor in OpenMPT or Schism Tracker source code.
-    //      This might be just misremembering but we'll be leaving this note here for now in case
-    //      somebody finds somewhere mentioning that thing. Sorry.
+    /// `None` uses the last value. Currently `None` gets parsed only if both parameters are 0.
+    /// Serialization is not implemented yet and this type will very likely change before it is.
+    /// For more information see the notes below.
+    ///
+    /// ## Notes
+    ///
+    /// We remember reading somewhere (even the code had it that way) that the arpeggiation was
+    /// only between two notes if `x == y`. Now we can't find it either on the OpenMPT wiki Effect
+    /// Reference page, nor in OpenMPT or Schism Tracker source code.  This might be just
+    /// misremembering but we'll be leaving this note here for now in case somebody finds somewhere
+    /// mentioning that thing. Sorry.
+    ///
+    /// Ok! We found something. In OpenMPT (master, rev `70efda227`)
+    /// file `soundlib/Sndmix.cpp`, function `CSoundFile::ProcessArpeggio` ([link]):
+    ///
+    /// [link]: https://github.com/OpenMPT/openmpt/blob/70efda227f77485ec595aff8246cbc9a37f0b539/soundlib/Sndmix.cpp#L1444-L1465
+    ///
+    /// ```c
+    /// // Trigger new note:
+    /// // - If there's an arpeggio on this row and
+    /// //   - the note to trigger is not the same as the previous arpeggio note or
+    /// //   - a pattern note has just been triggered on this tick
+    /// // - If there's no arpeggio
+    /// //   - but an arpeggio note is still active and
+    /// //   - there's no note stop or new note that would stop it anyway
+    /// if((arpOnRow && chn.nArpeggioLastNote != chn.nArpeggioBaseNote + step && (!m_SongFlags[SONG_FIRSTTICK] || !chn.rowCommand.IsNote()))
+    ///     || (!arpOnRow && chn.rowCommand.note == NOTE_NONE && chn.nArpeggioLastNote != NOTE_NONE))
+    ///     SendMIDINote(nChn, chn.nArpeggioBaseNote + step, static_cast<uint16>(chn.nVolume));
+    /// // Stop note:
+    /// // - If some arpeggio note is still registered or
+    /// // - When starting an arpeggio on a row with no other note on it, stop some possibly still playing note.
+    /// if(chn.nArpeggioLastNote != NOTE_NONE)
+    ///     SendMIDINote(nChn, chn.nArpeggioLastNote + NOTE_MAX_SPECIAL, 0);
+    /// else if(arpOnRow && m_SongFlags[SONG_FIRSTTICK] && !chn.rowCommand.IsNote() && ModCommand::IsNote(lastNote))
+    ///     SendMIDINote(nChn, lastNote + NOTE_MAX_SPECIAL, 0);
+    ///
+    /// if(chn.rowCommand.command == CMD_ARPEGGIO)
+    ///     chn.nArpeggioLastNote = chn.nArpeggioBaseNote + step;
+    /// else
+    ///     chn.nArpeggioLastNote = NOTE_NONE;
+    /// ```
+    ///
+    /// If we read this correctly it means arpeggio can have either `None` (reuse last effect) or
+    /// can make 0, 1 or 2 retriggers, or even act like a note cut if the command doesn't have any
+    /// base note.
+    // TODO Use the proper types here, it is probably going to be an
+    //      `Option<ArrayVec<[RangedU8<0, 0x0F>; 2]>>`.
     Arpeggio(Option<(RangedU8<0, 0x0F>, RangedU8<0, 0x0F>)>),
 
-    /// `Kxx` Dual Command: `H00` & `Dxx`
+    /// `Kxy` Dual Command: `H00` & `Dxy`
+    ///
+    /// Functions like `Dxy` with `H00`. Parameters are used the same way as `Dxy`.
+    ///
+    /// `None` uses the last value.
+    // TODO Is the memory shared with `Dxy` or not?
     VolumeSlideAndVibrato(Option<VolumeSlide>),
 
-    /// `Lxx` Dual Command: `G00` & `Dxx`
+    /// `Lxx` Dual Command: `G00` & `Dxy`
+    ///
+    /// Functions like `Dxy` with `G00`. Parameters are used the same way as `Dxy`.
+    ///
+    /// `None` uses the last value.
+    // TODO Is the memory shared with `Dxy` or not?
     VolumeSlideAndPortamento(Option<VolumeSlide>),
 
     /// `Mxx` Set channel volume to `xx`
@@ -272,13 +336,23 @@ pub enum EffectCmd {
     /// All values above `0x40` are clipped to `0x40`.
     SetChannelVolume(RangedU8<0, 0x40>),
 
-    /// `Nxx` ...
+    /// `Nxy` Channel volume slide
+    ///
+    /// Similar to `Dxy`, but applies to the current channel's volume.
+    ///
+    /// `None` uses the last value.
     ChannelVolumeSlide(Option<VolumeSlide>),
 
-    /// `Oxx` Set sample offset to `yxx00h`, `SAy` Set high value of sample offset `yxx00h`
+    /// `Oxx` Set sample offset to `0xyxx00`, `SAy` Set high value of sample offset `0xyxx00`
+    ///
+    /// See [`SetSampleOffset`] for more details.
     SetSampleOffset(SetSampleOffset),
 
-    /// `Pxx` ...
+    /// `Pxx` Panning slide
+    ///
+    /// See [`PanningSlide`] for more details.
+    ///
+    /// `None` uses the last value.
     PanningSlide(Option<PanningSlide>),
 
     /// `Qxy` Retrigger note every `y` ticks with volume modifier `x`
@@ -295,28 +369,48 @@ pub enum EffectCmd {
     ///     7: *1/2                 F: *2
     /// ```
     ///
+    /// `None` uses the last value.
+    ///
     /// ## Canonicalization
     /// Value `8` is replaced by `0` during parsing.
     // TODO Find a reasonable way to express the disjoint interval for `x` in the type.
-    Retrigger(RangedU8<0, 0x0F>, RangedU8<0, 0x0F>),
+    Retrigger(Option<(RangedU8<1, 0x0F>, RangedU8<1, 0x0F>)>),
 
     /// `Rxy` Tremolo with speed `x`, depth `y`
-    Tremolo(RangedU8<0, 0x0F>, RangedU8<0, 0x0F>),
+    ///
+    /// Executes tremolo weith speed `x` and depth `y` on the current note.
+    ///
+    /// Modulates with selected tremolo waveform [`Special::SetTremoloWaveform`].
+    ///
+    /// `None` uses the last value, each parameter has its separate memory.
+    /// Memory is shared with `Uxy`.
+    Tremolo(Option<RangedU8<1, 0x0F>>, Option<RangedU8<1, 0x0F>>),
 
-    /// `Sxx` ...
+    /// `Sxx` Special commands
     ///
     /// `None` uses the last value, memory is shared by all `Sxx` subcommands.
     ///
     /// ## Canonicalization
-    /// The second nibble is ignored when parsing the set subcommand, any value in range
+    /// The second nibble is ignored when parsing the special subcommand, any value in range
     /// `S00..=S0F` will be parsed as `None`, but it will only be serialized as `S00`.
-    Set(Option<Set>),
+    Special(Option<Special>),
 
-    /// `Txx` ...
-    Tempo(Tempo),
+    /// `Txx` Change tempo
+    ///
+    /// See [`Tempo`] for more details.
+    ///
+    /// `None` uses last value.
+    Tempo(Option<Tempo>),
 
     /// `Uxy` Fine vibrato with speed `x`, depth `y`
-    FineVibrato(RangedU8<0, 0x0F>, RangedU8<0, 0x0F>),
+    ///
+    /// Similar to `Hxy`, but with 4 times the precision.
+    ///
+    /// See [`EffectCmd::Vibrato`] for more details.
+    ///
+    /// `None` uses the last value, each parameter has its separate memory.
+    /// Memory is shared with `Hxy`.
+    FineVibrato(Option<RangedU8<1, 0x0F>>, Option<RangedU8<1, 0x0F>>),
 
     /// `Vxx` Set global volume to `xx`
     ///
@@ -324,16 +418,39 @@ pub enum EffectCmd {
     /// All values above `0x80` are clipped to `0x80`.
     SetGlobalVolume(RangedU8<0, 0x80>),
 
-    /// `Wxx` ...
+    /// `Wxx` Global volume slide
+    ///
+    /// Similar to `Dxy`, but applies to global volume.
+    ///
+    /// `None` uses the last value.
     GlobalVolumeSlide(Option<VolumeSlide>),
 
     /// `Xxx` Set panning position
+    ///
+    /// Sets the current channel's panning position.
+    ///
+    /// Ranges from `0x00` (left) to `0xFF` (right).
+    // TODO What is the center position? Can we be panned more to one side than the other? Ugh...
+    //      Schism Tracker has 0-256 in their comment, that's either an non-inclusive range or
+    //      there is something funky going on (they store the value in an `int32_t` so 256 fits).
     SetPanningPosition(u8),
 
     /// `Yxy` Panbrello with speed `x`, depth `y`
-    Panbrello(RangedU8<0, 0x0F>, RangedU8<0, 0x0F>),
+    ///
+    /// Executes panbrello with speed `x` and depth `y` on the current note.
+    ///
+    /// Modulates with selected panbrello waveform [`Special::SetPanbrelloWaveform`].
+    ///
+    /// `None` uses the last value, each parameter has its separate memory.
+    /// Memory is shared with `Uxy`.
+    Panbrello(Option<RangedU8<1, 0x0F>>, Option<RangedU8<1, 0x0F>>),
 
     /// `Zxx` MIDI Macros
+    ///
+    /// Executes a MIDI macro.
+    ///
+    /// This effect is rather complicated so we don't attempt to parse it any further. For more
+    /// information see the [OpenMPT wiki article](https://wiki.openmpt.org/Manual:_Zxx_Macros).
     MIDI(u8),
 }
 
@@ -353,7 +470,7 @@ pub enum EffectCategory {
     Misc,
 }
 
-/// Effects `Dxx`, `Kxx`, `Lxx`, `Nxx`, `Wxx` ...
+/// Effects `Dxx`, `Kxx`, `Lxx`, `Nxx`, `Wxx`
 ///
 /// All of these commands perform a volume slide but on different mixers.
 ///
@@ -364,8 +481,7 @@ pub enum EffectCategory {
 /// ## Canonicalization
 /// Values where both nibbles are in `1..=0xE` at the same time don't have a defined meaning, these
 /// get skipped by the parser.
-///
-/// TODO describe volume slide units
+// TODO describe volume slide units
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum VolumeSlide {
     /// `D0x`, `K0x`, `L0x`, `N0x`, `W0x` Volume slide down by `x`
@@ -394,11 +510,12 @@ pub enum VolumeSlide {
     FineUp(RangedU8<1, 0x0F>),
 }
 
-/// Effects `Exx`, `Fxx` ...
+/// Effects `Exx`, `Fxx`
 ///
 /// Portamento down or up in coarse, fine or extra fine steps.
 ///
-/// TODO describe frequency units
+/// Slide can be either smooth or semitone-wise, see [`Special::SetGlissando`] for details.
+// TODO describe frequency units
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Portamento {
     /// `Exx`, `Fxx` Pitch slide down/up by `xx`
@@ -424,15 +541,31 @@ pub enum Portamento {
 
 /// Effects `Oxx` and `SAy` combined
 ///
-/// Because they're doing part of the same thing and this will just make it nicer to use,
-/// hopefully.
+/// The offset into the sample is represented in the number of samples, in hexadecimal `0xyxx00`,
+/// where `y` is configured by [`SetSampleOffset::High`] and `xx` by [`SetSampleOffset::Low`].
+///
+/// We're not going to be handling memory with `Option`s the type system like with other commands
+/// here because the handling is a bit inconsistent.
+///
+/// Recalling of the `High` part can be done using [`EffectCmd::Set(None)`] if it was the
+/// previously used `Sxx` command.
+///
+/// Recalling of the `Low` part can be done with `EffectCmd::Offset(SetSampleOffset::Low(0x0))`
+/// this makes it impossible to use an offset of for example `O00` + `SA1` (`0x10000`), which the
+/// OpenMPT GUI happily hints at but then it doesn't actually work in the player. `O00` does recall
+/// the last value and it's weirdly stateful in that even if you remove all the other instances of
+/// `SAy` and `Oxx` and play the pattern from the beginning it seems to remember the last offset.
+///
+/// We leave this encoded as a full range `u8` and don't treat the zero specially.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SetSampleOffset {
     Low(u8),
     High(RangedU8<0, 0x0F>),
 }
 
-/// Effect `Pxx` ...
+/// Effect `Pxx` Panning slide
+///
+/// Slides the current channel's panning position left or right.
 ///
 /// ## Canonicalization
 /// Values where both nibbles are in `1..=0xE` at the same time don't have a defined meaning, these
@@ -446,19 +579,19 @@ pub enum PanningSlide {
     Left(RangedU8<1, 0x0F>),
 
     /// `PFx` Fine panning slide to right by `x`
-    FineRight(RangedU8<0, 0x0F>),
+    FineRight(RangedU8<1, 0x0F>),
 
     /// `PxF` Fine panning slide to left by `x`
-    FineLeft(RangedU8<0, 0x0F>),
+    FineLeft(RangedU8<1, 0x0F>),
 }
 
-/// Effect `Sxx` ...
+/// Effect `Sxx` Special commands
 ///
 /// `SAy` is represented using [`SetSampleOffset::High`] in Rust.
 ///
 /// All the `Sxx` commands share the same memory, this should include the `SAy` command.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Set {
+pub enum Special {
     // Schism Tracker and OpenMPT (IT Effects) documentation disagree on this one. OpenMPT says
     // `S00` recalls `Sxx` command memory but Schism Tracker says `S0x` sets filter, it is marked
     // in red which probably means we don't need to worry about it, at least for now.
@@ -474,7 +607,7 @@ pub enum Set {
     ///
     /// ## Canonicalization
     /// When the value `y` is more than `1` it gets converted to `true`.
-    Glissando(bool),
+    SetGlissando(bool),
 
     /// `S2x` Set finetune
     ///
@@ -483,22 +616,22 @@ pub enum Set {
     /// Overrides the current sample's C-5 frequency with a MOD finetune value.
     ///
     /// TODO link to _what is_ MOD finetune value
-    Finetune(RangedU8<0, 0x0F>),
+    SetFinetune(RangedU8<0, 0x0F>),
 
     /// `S3x` Set vibrato waveform to type `x`
     ///
     /// Sets the waveform of future [`Vibrato`](EffectCmd::Vibrato) effects.
-    VibratoWaveform(Waveform),
+    SetVibratoWaveform(Waveform),
 
     /// `S4x` Set tremolo waveform to type `x`
     ///
     /// Sets the waveform of future [`Tremolo`](EffectCmd::Tremolo) effects.
-    TremoloWaveform(Waveform),
+    SetTremoloWaveform(Waveform),
 
     /// `S5x` Set panbrello waveform to type `x`
     ///
     /// Sets the waveform of future [`Panbrello`](EffectCmd::Panbrello) effects.
-    PanbrelloWaveform(Waveform),
+    SetPanbrelloWaveform(Waveform),
 
     /// `S6x` Pattern delay for `x` ticks
     ///
@@ -510,30 +643,30 @@ pub enum Set {
     PastNote(SetPastNote),
 
     /// `S73`, `S74`, `S75`, `S76` - Set NNA to note cut, continue, off or fade
-    NewNoteAction(SetNewNoteAction),
+    SetNewNoteAction(SetNewNoteAction),
 
     /// `S77`, `S78` Turn off/on volume envelope
-    VolumeEnvelope(bool),
+    SetVolumeEnvelope(bool),
 
     /// `S79`, `S7A` Turn off/on panning envelope
-    PanningEnvelope(bool),
+    SetPanningEnvelope(bool),
 
     /// `S7B`, `S7C` Turn off/on pitch envelope
-    PitchEnvelope(bool),
+    SetPitchEnvelope(bool),
 
     /// `S8x` Set panning position to `x`
-    Panning(RangedU8<0, 0x0F>),
+    SetPanning(RangedU8<0, 0x0F>),
 
     /// `S90`, `S91` Turn off/on surround sound
     ///
     /// Only `S91` (`Set::Surround(true)`) is supported in the original Impulse Tracker,
     /// other `S9x` commands are MPTM extensions.
-    Surround(bool),
+    SetSurround(bool),
 
     /// `S98`, `S99` Turn off/on reverb
     ///
     /// *MPTM extension*
-    Reverb(bool),
+    SetReverb(bool),
 
     // Collides with `Set::Reverb(true)`, this is from the Schism Tracker help but is listed
     // in red and marked as not implemented.
@@ -544,22 +677,22 @@ pub enum Set {
     /// `S9A`, `S9B` Set Surround mode to Center or Quad
     ///
     /// *MPTM extension*
-    SurroundMode(SurroundMode),
+    SetSurroundMode(SurroundMode),
 
     /// `S9C`, `S9D` Set filter mode to Global or Local
     ///
     /// *MPTM extension*
-    FilterMode(FilterMode),
+    SetFilterMode(FilterMode),
 
     /// `S9E`, `S9F` Play Forward or Backward
     ///
     /// *MPTM extension*
-    Direction(PlayDirection),
+    SetDirection(PlayDirection),
 
     // SAy is handled by [`SetSampleOffset`] together with the Oxx command.
 
     /// `SB0` Set loopback point
-    LoopbackPoint,
+    SetLoopbackPoint,
 
     /// `SBx` Loop `x` times to loopback point
     LoopbackTimes(RangedU8<0x01, 0x0F>),
@@ -574,7 +707,7 @@ pub enum Set {
     PatternRowDelay(RangedU8<0, 0x0F>),
 
     /// `SFx` Set parameterised MIDI Macro
-    MIDIParam(RangedU8<0, 0x0F>),
+    SetMIDIParam(RangedU8<0, 0x0F>),
 }
 
 /// Oscillator waveforms for commands `S3x`, `S4x` and `S5x`
@@ -658,16 +791,24 @@ pub enum PlayDirection {
     Backward,
 }
 
-/// Effect `Txx` ...
+/// Effect `Txx` Change tempo
+/// 
+/// OpenMPT documents only the `Set` variant. Schism Tracker sets tempo on the first tick of the
+/// row if it got the `Set` variant, or increases/decreases the tempo on every other tick of the
+/// row by `x` and clipping it to `0x20..=0xFF`.
+///
+/// ## Canonicalization
+/// `0x00` is used for memory and parses as `None`, but `0x10` would increase tempo by 0 which is
+/// useless so the parser just skips the effect.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Tempo {
     /// `T0x` Tempo slide down by `x`
-    SlideDown(RangedU8<0, 0x0F>),
+    SlideDown(RangedU8<1, 0x0F>),
 
     /// `T1x` Tempo slide up by `x`
-    SlideUp(RangedU8<0, 0x0F>),
+    SlideUp(RangedU8<1, 0x0F>),
 
-    /// `Txx` Set Tempo to `xx` (20h->0FFh)
+    /// `Txx` Set Tempo to `xx`
     Set(RangedU8<0x20, 0xFF>),
 }
 
@@ -838,18 +979,18 @@ impl EffectCmd {
 
             EffectCmd::JumpOrder(_) |
             EffectCmd::BreakRow(_) |
-            EffectCmd::Set(Some(Set::PatternTickDelay(_))) |
-            EffectCmd::Set(Some(Set::LoopbackPoint)) |
-            EffectCmd::Set(Some(Set::LoopbackTimes(_))) |
-            EffectCmd::Set(Some(Set::PatternRowDelay(_)))
+            EffectCmd::Special(Some(Special::PatternTickDelay(_))) |
+            EffectCmd::Special(Some(Special::SetLoopbackPoint)) |
+            EffectCmd::Special(Some(Special::LoopbackTimes(_))) |
+            EffectCmd::Special(Some(Special::PatternRowDelay(_)))
                 => EffectCategory::GlobalPattern,
 
             EffectCmd::VolumeSlide(_) |
-            EffectCmd::Tremor(_, _) |
+            EffectCmd::Tremor(_) |
             EffectCmd::SetChannelVolume(_) |
             EffectCmd::ChannelVolumeSlide(_) |
             EffectCmd::Tremolo(_, _) |
-            EffectCmd::Set(Some(Set::TremoloWaveform(_))) |
+            EffectCmd::Special(Some(Special::SetTremoloWaveform(_))) |
             EffectCmd::SetGlobalVolume(_) |
             EffectCmd::GlobalVolumeSlide(_)
                 => EffectCategory::Volume,
@@ -859,15 +1000,15 @@ impl EffectCmd {
             EffectCmd::TonePortamento(_) |
             EffectCmd::Vibrato(_, _) |
             EffectCmd::Arpeggio(_) |
-            EffectCmd::Set(Some(Set::Glissando(_))) |
-            EffectCmd::Set(Some(Set::Finetune(_))) |
-            EffectCmd::Set(Some(Set::VibratoWaveform(_))) |
-            EffectCmd::Set(Some(Set::PanbrelloWaveform(_))) |
+            EffectCmd::Special(Some(Special::SetGlissando(_))) |
+            EffectCmd::Special(Some(Special::SetFinetune(_))) |
+            EffectCmd::Special(Some(Special::SetVibratoWaveform(_))) |
+            EffectCmd::Special(Some(Special::SetPanbrelloWaveform(_))) |
             EffectCmd::FineVibrato(_, _)
                 => EffectCategory::Pitch,
 
             EffectCmd::PanningSlide(_) |
-            EffectCmd::Set(Some(Set::Panning(_))) |
+            EffectCmd::Special(Some(Special::SetPanning(_))) |
             EffectCmd::SetPanningPosition(_) |
             EffectCmd::Panbrello(_, _)
                 => EffectCategory::Panning,

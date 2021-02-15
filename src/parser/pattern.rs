@@ -256,219 +256,15 @@ fn effect<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(
     input: &'i [u8],
 ) -> IResult<&'i [u8], Option<EffectCmd>, E> {
     if mask_var.contains(Mask::READ_EFFECT) && !mask_var.contains(Mask::LAST_EFFECT) {
-        // We're using effects definition from OpenMPT but we're trying to adhere to ITTECH.TXT so
-        // we only parse the first 31. In the future we might want to support the `itEx` format
-        // from OpenMPT instead.
         let (rest, (effect, param)) = tuple((
-            // TODO Invalid effects should be just ignored and the error logged.
-            //      Postponing this until the warning logging is implemented.
-            //
-            // NOTE OpenMPT just completely ignores an effect if it's invalid and doesn't write the
-            //      invalid effect back on save, this means our strategy of not letting invalid
-            //      stuff through will give us mostly parity with OpenMPT, yay!
-            context!(ranged(le_u8, 0..=0x1A), "reading effect number"),
+            context!(le_u8, "reading effect number"),
             context!(le_u8, "reading effect parameter"),
         ))(input)?;
 
         let effect = if effect == 0x00 {
             None
         } else {
-            // Extract param nibbles.
-            let (x, y) = (param >> 4, param & 0x0F);
-
-            // Effects are numbered 0x1..=0x1A (or 1..=26 decimal), these numbers are represented
-            // as capital leters in in tracker UI and documentation. We convert it to ascii char
-            // range here to make the large match statement more readable.
-            let effect_code = (effect - 1 + b'A') as char;
-
-            // For more information on the values here, see the documentation for `EffectCmd`
-            // and its child enums.
-            //
-            // Parsing here is an attempt to be consistent with OpenMPT and Schism Tracker.
-            // Inconsistencies must be documented and justified, otherwise that's a bug.
-            //
-            // Early returns in this match are not saving the, this should be only done when
-            // encountering an error.
-            let effect = match effect_code {
-                'A' if param == 0 => return Ok((rest, None)),
-                'A' => EffectCmd::SetSpeed(param.cast()),
-                'B' => EffectCmd::JumpOrder(param),
-                'C' => EffectCmd::BreakRow(param),
-                'D' | 'K' | 'L' | 'N' | 'W' => {
-                    // OpenMPT code for this part is extremely confusing, Schism Tracker code is
-                    // better but there are three functions which are supposed to be doing the
-                    // exact same parsing and their bodies are different. The code is complicated
-                    // enough that we're not sure they're all behaving exactly the same.
-                    //
-                    // For reference see file `schismtracker/player/effects.c` functions
-                    // `fx_volume_slide`, `fx_channel_vol_slide` and `fx_global_vol_slide`.
-                    //
-                    // This code was written with reference to `fx_volume_slide`.
-                    let volume_slide = match (x, y) {
-                        // For the first three branches the parsing is unambiguous and the order
-                        // doesn't matter.
-                        (0x0, 0x0) => None,
-                        (p, 0x0) => Some(VolumeSlide::Up(p.cast())),
-                        (0x0, p) => Some(VolumeSlide::Down(p.cast())),
-
-                        // OpenMPT wiki says that `FineUp` and `FineDown` parameters can never be
-                        // `0xF` however both OpenMPT and Schism Tracker seem to allow `0xF` with
-                        // `FineUp`.
-                        //
-                        // TODO We might want to clip it to `0xE` in the future.
-                        (p, 0xF) => Some(VolumeSlide::FineUp(p.cast())),
-                        (0xF, p) => Some(VolumeSlide::FineDown(p.cast())),
-
-                        // x, y are nibbles. These values are unrepresentable.
-                        (0x10..=0xFF, _) | (_, 0x10..=0xFF) => unreachable!(),
-
-                        // We'll be completely ignoring values in the invalid ranges, this
-                        // behaviour almost matches the Schism Tracker player. The only difference
-                        // is that we'll behave like we never saw the invalid values but SM would
-                        // save them into memory before ignoring them, which means all recall
-                        // commands (e.g. `D00`) would also get ignored by ST until a valid command
-                        // is played. This inconsistency makes our API much cleaner and since these
-                        // values are "invalid" anyway it shouldn't create any problems.
-                        //
-                        // TODO In the future we want to emit a warning when an out-of-range value
-                        //      is detected and gets converted to something else.
-                        _ => return Ok((rest, None)),
-                    };
-                    match effect_code {
-                        'D' => EffectCmd::VolumeSlide(volume_slide),
-                        'K' => EffectCmd::VolumeSlideAndVibrato(volume_slide),
-                        'L' => EffectCmd::VolumeSlideAndPortamento(volume_slide),
-                        'N' => EffectCmd::ChannelVolumeSlide(volume_slide),
-                        'W' => EffectCmd::GlobalVolumeSlide(volume_slide),
-                        _ => unreachable!(),
-                    }
-                },
-                'E' | 'F' => {
-                    let portamento = match param {
-                        0x00 => None,
-                        0x01 ..= 0xDF => Some(Portamento::Coarse(param.cast())),
-                        0xF0 ..= 0xFF => Some(Portamento::Fine((param - 0xF0).cast())),
-                        0xE0 ..= 0xEF => Some(Portamento::ExtraFine((param - 0xE0).cast())),
-                    };
-                    match effect_code {
-                        'E' => EffectCmd::PortamentoDown(portamento),
-                        'F' => EffectCmd::PortamentoUp(portamento),
-                        _ => unreachable!(),
-                    }
-                },
-                'G' => EffectCmd::TonePortamento((param > 0).then(|| param.cast())),
-                'H' => EffectCmd::Vibrato(x.cast(), y.cast()),
-                'I' => EffectCmd::Tremor(x.cast(), y.cast()),
-                'J' => EffectCmd::Arpeggio((param > 0).then(|| (x.cast(), y.cast()))),
-                // 'K' and 'L' are handled together with 'D' above.
-                'M' => EffectCmd::SetChannelVolume(
-                    // Clipping the value to the allowed maximum.
-                    param.min(0x40).cast(),
-                ),
-                // 'N' is handled together with 'D' above.
-                'O' => EffectCmd::SetSampleOffset(SetSampleOffset::Low(param)),
-                'S' if x == 0xA => EffectCmd::SetSampleOffset(SetSampleOffset::High(y.cast())),
-                'P' => EffectCmd::PanningSlide(match (x, y) {
-                    // TODO This parsing requires the same treatment as the `VolumeSlide` family of
-                    //      effects: comparison with OMPT/ST implementation and documentation.
-                    (0x0, 0x0) => None,
-                    (0x0, p) => Some(PanningSlide::Right(p.cast())),
-                    (p, 0x0) => Some(PanningSlide::Left(p.cast())),
-                    (0xF, p) => Some(PanningSlide::FineRight(p.cast())),
-                    (p, 0xF) => Some(PanningSlide::FineLeft(p.cast())),
-                    (0x10..=0xFF, _) | (_, 0x10..=0xFF) => unreachable!(), // x, y are nibbles.
-                         // TODO log an error
-                    _ => return Ok((rest, None)),
-                }),
-                'Q' => {
-                    // Value 8 is documented as unused however we can't simply exclude it from the
-                    // valid range so we'll instead map it to 0 which means "no volume change".
-                    let x = if x == 8 { 0 } else { x };
-                    EffectCmd::Retrigger(x.cast(), y.cast())
-                }
-                'R' => EffectCmd::Tremolo(x.cast(), y.cast()),
-                'S' => EffectCmd::Set(if x == 0 {
-                    None
-                } else {
-                    Some(match x {
-                        0x1 => Set::Glissando(y != 0x0),
-                        0x2 => Set::Finetune(y.cast()),
-                        0x3 | 0x4 | 0x5 => {
-                            let waveform = match y {
-                                0x0 => Waveform::Sine,
-                                0x1 => Waveform::Sawtooth,
-                                0x2 => Waveform::Square,
-                                // Parsing any value higher than `0x3` as `Random` too.
-                                0x3 | _ => Waveform::Random,
-                            };
-                            match x {
-                                0x3 => Set::VibratoWaveform(waveform),
-                                0x4 => Set::TremoloWaveform(waveform),
-                                0x5 => Set::PanbrelloWaveform(waveform),
-                                _ => unreachable!(),
-                            }
-                        },
-                        0x6 => Set::PatternTickDelay(y.cast()),
-                        0x7 => match y {
-                            0x0 => Set::PastNote(SetPastNote::Cut),
-                            0x1 => Set::PastNote(SetPastNote::Off),
-                            0x2 => Set::PastNote(SetPastNote::Fade),
-                            0x3 => Set::NewNoteAction(SetNewNoteAction::Cut),
-                            0x4 => Set::NewNoteAction(SetNewNoteAction::Continue),
-                            0x5 => Set::NewNoteAction(SetNewNoteAction::Off),
-                            0x6 => Set::NewNoteAction(SetNewNoteAction::Fade),
-                            0x7 => Set::VolumeEnvelope(false),
-                            0x8 => Set::VolumeEnvelope(true),
-                            0x9 => Set::PanningEnvelope(false),
-                            0xA => Set::PanningEnvelope(true),
-                            0xB => Set::PitchEnvelope(false),
-                            0xC => Set::PitchEnvelope(true),
-                            // TODO Log error. ("command `S7y` parameter y={:#x} out of range 0x0..=0xC", y)
-                            _ => return Ok((rest, None)),
-                        },
-                        0x8 => Set::Panning(y.cast()),
-                        0x9 => match y {
-                            0x0 => Set::Surround(false),
-                            0x1 => Set::Surround(true),
-                            // TODO Log error. ("command `S9y` parameter y={:#x} out of range 0x0..=0x1 and 0x8..=0xF", y)
-                            0x2..=0x7 => return Ok((rest, None)),
-                            0x8 => Set::Reverb(false),
-                            0x9 => Set::Reverb(true),
-                            0xA => Set::SurroundMode(SurroundMode::Center),
-                            0xB => Set::SurroundMode(SurroundMode::Quad),
-                            0xC => Set::FilterMode(FilterMode::Global),
-                            0xD => Set::FilterMode(FilterMode::Local),
-                            0xE => Set::Direction(PlayDirection::Forward),
-                            0xF => Set::Direction(PlayDirection::Backward),
-                            _ => unreachable!(),
-                        },
-                        // `SAy` handled together with `Oxx`, above.
-                        0xB if y == 0x0 => Set::LoopbackPoint,
-                        0xB => Set::LoopbackTimes(y.cast()),
-                        0xC => Set::NoteCut(y.cast()),
-                        0xD => Set::NoteDelay(y.cast()),
-                        0xE => Set::PatternRowDelay(y.cast()),
-                        0xF => Set::MIDIParam(y.cast()),
-                        _ => unreachable!(),
-                    })
-                }),
-                'T' => EffectCmd::Tempo(match x {
-                    0x0 => Tempo::SlideDown(y.cast()),
-                    0x1 => Tempo::SlideUp(y.cast()),
-                    _ => Tempo::Set(param.cast()),
-                }),
-                'U' => EffectCmd::FineVibrato(x.cast(), y.cast()),
-                'V' => EffectCmd::SetGlobalVolume(
-                    // Clipping the value to the allowed maximum.
-                    param.min(0x80).cast(),
-                ),
-                // 'W' is handled together with 'D' above.
-                'X' => EffectCmd::SetPanningPosition(param),
-                'Y' => EffectCmd::Panbrello(x.cast(), y.cast()),
-                'Z' => EffectCmd::MIDI(param),
-                _ => unreachable!(), // Used `ranged` parser to read the value.
-            };
-            Some(effect)
+            parse_effect(effect, param, None)
         };
         state.last_effect[channel.as_usize()] = effect;
         Ok((rest, effect))
@@ -477,6 +273,259 @@ fn effect<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(
     } else {
         Ok((input, None))
     }
+}
+
+/// Parse structured effect from raw effect number and parameter
+///
+/// This function performs all the canonicalization and checking as described in the documentation
+/// for [`EffectCmd`] and the other enums it can contain. If the log parameter is some it'll log
+/// a user-readable description of the actions performed.
+///
+/// This function can be used when parsing user input in a tracker based on this library to ensure
+/// consistency when reading files from disk, when using the UI and when saving to disk.
+///
+/// Feel free to report issues with any inconsistency between the results of this method and the
+/// documentation.
+pub fn parse_effect(effect: u8, param: u8, log: Option<&mut Vec<String>>) -> Option<EffectCmd> {
+    let log = move |msg: String| {
+        if let Some(log) = log {
+            log.push(msg.into());
+        }
+    };
+
+    // Extract param nibbles.
+    let (x, y) = (param >> 4, param & 0x0F);
+
+    // Effects are numbered 0x1..=0x1A (or 1..=26 decimal), these numbers are represented
+    // as capital leters in in tracker UI and documentation. We convert it to ascii char
+    // range here to make the large match statement more readable.
+    let effect_code = (effect - 1 + b'A') as char;
+
+    // For more information on the values here, see the documentation for `EffectCmd`
+    // and its child enums.
+    //
+    // Parsing here is an attempt to be consistent with OpenMPT and Schism Tracker.
+    // Inconsistencies must be documented and justified, otherwise that's a bug.
+    //
+    // Early returns in this match are not saving the, this should be only done when
+    // encountering an error.
+    Some(match effect_code {
+        'A' if param == 0 => {
+            log("effect `A00` does nothing, skipping".into());
+            return None;
+        },
+        'A' => EffectCmd::SetSpeed(param.cast()),
+        'B' => EffectCmd::JumpOrder(param),
+        'C' => EffectCmd::BreakRow(param),
+        'D' | 'K' | 'L' | 'N' | 'W' => {
+            // OpenMPT code for this part is extremely confusing, Schism Tracker code is
+            // better but there are three functions which are supposed to be doing the
+            // exact same parsing and their bodies are different. The code is complicated
+            // enough that we're not sure they're all behaving exactly the same.
+            //
+            // For reference see file `schismtracker/player/effects.c` functions
+            // `fx_volume_slide`, `fx_channel_vol_slide` and `fx_global_vol_slide`.
+            //
+            // This code was written with reference to `fx_volume_slide`.
+            let volume_slide = match (x, y) {
+                // For the first three branches the parsing is unambiguous and the order
+                // doesn't matter.
+                (0x0, 0x0) => None,
+                (p, 0x0) => Some(VolumeSlide::Up(p.cast())),
+                (0x0, p) => Some(VolumeSlide::Down(p.cast())),
+
+                // OpenMPT wiki says that `FineUp` and `FineDown` parameters can never be `0xF`
+                // however both OpenMPT and Schism Tracker seem to allow `0xF` with `FineUp`.
+                //
+                // TODO We might want to clip it to `0xE` in the future for the sake of symmetry.
+                (p, 0xF) => Some(VolumeSlide::FineUp(p.cast())),
+                (0xF, p) => Some(VolumeSlide::FineDown(p.cast())),
+
+                // x, y are nibbles. These values are unrepresentable.
+                (0x10..=0xFF, _) | (_, 0x10..=0xFF) => unreachable!(),
+
+                // We'll be completely ignoring values in the invalid ranges, this
+                // behaviour almost matches the Schism Tracker player. The only difference
+                // is that we'll behave like we never saw the invalid values but SM would
+                // save them into memory before ignoring them, which means all recall
+                // commands (e.g. `D00`) would also get ignored by ST until a valid command
+                // is played. This inconsistency makes our API much cleaner and since these
+                // values are "invalid" anyway it shouldn't create any problems.
+                _ => {
+                    log(format!(
+                        "VolumeSlide parameters require exactly one nibble to be either `0x0` or `0xF`, \
+                        value parameters x={:#X}, y={:#X} don't satisfy this requirement, skipping",
+                        x, y,
+                    ));
+                    return None;
+                },
+            };
+            match effect_code {
+                'D' => EffectCmd::VolumeSlide(volume_slide),
+                'K' => EffectCmd::VolumeSlideAndVibrato(volume_slide),
+                'L' => EffectCmd::VolumeSlideAndPortamento(volume_slide),
+                'N' => EffectCmd::ChannelVolumeSlide(volume_slide),
+                'W' => EffectCmd::GlobalVolumeSlide(volume_slide),
+                _ => unreachable!(),
+            }
+        },
+        'E' | 'F' => {
+            let portamento = match param {
+                0x00 => None,
+                0x01 ..= 0xDF => Some(Portamento::Coarse(param.cast())),
+                0xF0 ..= 0xFF => Some(Portamento::Fine((param - 0xF0).cast())),
+                0xE0 ..= 0xEF => Some(Portamento::ExtraFine((param - 0xE0).cast())),
+            };
+            match effect_code {
+                'E' => EffectCmd::PortamentoDown(portamento),
+                'F' => EffectCmd::PortamentoUp(portamento),
+                _ => unreachable!(),
+            }
+        },
+        'G' => EffectCmd::TonePortamento((param > 0).then(|| param.cast())),
+        'H' => EffectCmd::Vibrato((x > 0).then(|| x.cast()), (y > 0).then(|| y.cast())),
+        'I' => EffectCmd::Tremor((x > 0 && y > 0).then(|| (x.cast(), y.cast()))),
+        'J' => EffectCmd::Arpeggio((param > 0).then(|| (x.cast(), y.cast()))),
+        // 'K' and 'L' are handled together with 'D' above.
+        'M' => EffectCmd::SetChannelVolume({
+            if param > 0x40 {
+                log(format!("ChannelVolume cannot be larger than 0x40, found {:#02X}, clipping value", param));
+                0x40.cast()
+            } else {
+                param.cast()
+            }
+        }),
+        // 'N' is handled together with 'D' above.
+        'O' => EffectCmd::SetSampleOffset(SetSampleOffset::Low(param)),
+        'S' if x == 0xA => EffectCmd::SetSampleOffset(SetSampleOffset::High(y.cast())),
+        'P' => EffectCmd::PanningSlide(match (x, y) {
+            // TODO This parsing requires the same treatment as the `VolumeSlide` family of
+            //      effects: comparison with OMPT/ST implementation and documentation.
+            (0x0, 0x0) => None,
+            (0x0, p) => Some(PanningSlide::Right(p.cast())),
+            (p, 0x0) => Some(PanningSlide::Left(p.cast())),
+            (0xF, p) => Some(PanningSlide::FineRight(p.cast())),
+            (p, 0xF) => Some(PanningSlide::FineLeft(p.cast())),
+            (0x10..=0xFF, _) | (_, 0x10..=0xFF) => unreachable!(), // x, y are nibbles.
+
+            // Invalid values are handled the same way as with `VolumeSlide`.
+            _ => {
+                log(format!(
+                    "PanningSlide parameters require exactly one nibble to be either `0x0` or `0xF`, \
+                    value parameters x={:#X}, y={:#X} don't satisfy this requirement, skipping",
+                    x, y,
+                ));
+                return None;
+            },
+        }),
+        'Q' => {
+            // Value 8 is documented as unused however we can't simply exclude it from the
+            // valid range so we'll instead map it to 0 which means "no volume change".
+            let x = if x == 8 { 0 } else { x };
+            EffectCmd::Retrigger((x > 0 && y > 0).then(|| (x.cast(), y.cast())))
+        }
+        'R' => EffectCmd::Tremolo((x > 0).then(|| x.cast()), (y > 0).then(|| y.cast())),
+        'S' => EffectCmd::Special(if x == 0 {
+            None
+        } else {
+            Some(match x {
+                0x1 => Special::SetGlissando(y != 0x0),
+                0x2 => Special::SetFinetune(y.cast()),
+                0x3 | 0x4 | 0x5 => {
+                    let waveform = match y {
+                        0x0 => Waveform::Sine,
+                        0x1 => Waveform::Sawtooth,
+                        0x2 => Waveform::Square,
+                        0x3 => Waveform::Random,
+                        _ => {
+                            // Parsing any value higher than `0x3` as `Random` too.
+                            log(format!("Waveform can only be in range 0x0..=0x3, found {:#X}, parsing as 0x3 (Waveform::Random)", y));
+                            Waveform::Random
+                        },
+                    };
+                    match x {
+                        0x3 => Special::SetVibratoWaveform(waveform),
+                        0x4 => Special::SetTremoloWaveform(waveform),
+                        0x5 => Special::SetPanbrelloWaveform(waveform),
+                        _ => unreachable!(),
+                    }
+                },
+                0x6 => Special::PatternTickDelay(y.cast()),
+                0x7 => match y {
+                    0x0 => Special::PastNote(SetPastNote::Cut),
+                    0x1 => Special::PastNote(SetPastNote::Off),
+                    0x2 => Special::PastNote(SetPastNote::Fade),
+                    0x3 => Special::SetNewNoteAction(SetNewNoteAction::Cut),
+                    0x4 => Special::SetNewNoteAction(SetNewNoteAction::Continue),
+                    0x5 => Special::SetNewNoteAction(SetNewNoteAction::Off),
+                    0x6 => Special::SetNewNoteAction(SetNewNoteAction::Fade),
+                    0x7 => Special::SetVolumeEnvelope(false),
+                    0x8 => Special::SetVolumeEnvelope(true),
+                    0x9 => Special::SetPanningEnvelope(false),
+                    0xA => Special::SetPanningEnvelope(true),
+                    0xB => Special::SetPitchEnvelope(false),
+                    0xC => Special::SetPitchEnvelope(true),
+                    _ => {
+                        log(format!("command `S7y` parameter y={:#x} is out of range 0x0..=0xC, skipping", y));
+                        return None;
+                    },
+                },
+                0x8 => Special::SetPanning(y.cast()),
+                0x9 => match y {
+                    0x0 => Special::SetSurround(false),
+                    0x1 => Special::SetSurround(true),
+                    0x2..=0x7 => {
+                        log(format!("command `S9y` parameter y={:#x} is out of range 0x0..=0x1 and 0x8..=0xF, skipping", y));
+                        return None;
+                    },
+                    0x8 => Special::SetReverb(false),
+                    0x9 => Special::SetReverb(true),
+                    0xA => Special::SetSurroundMode(SurroundMode::Center),
+                    0xB => Special::SetSurroundMode(SurroundMode::Quad),
+                    0xC => Special::SetFilterMode(FilterMode::Global),
+                    0xD => Special::SetFilterMode(FilterMode::Local),
+                    0xE => Special::SetDirection(PlayDirection::Forward),
+                    0xF => Special::SetDirection(PlayDirection::Backward),
+                    _ => unreachable!(),
+                },
+                // `SAy` handled together with `Oxx`, above.
+                0xB if y == 0x0 => Special::SetLoopbackPoint,
+                0xB => Special::LoopbackTimes(y.cast()),
+                0xC => Special::NoteCut(y.cast()),
+                0xD => Special::NoteDelay(y.cast()),
+                0xE => Special::PatternRowDelay(y.cast()),
+                0xF => Special::SetMIDIParam(y.cast()),
+                _ => unreachable!(),
+            })
+        }),
+        'T' => EffectCmd::Tempo(match param {
+            0x00 => None,
+            0x10 => {
+                log("increasing tempo by 0 has no effect, skipping".into());
+                return None;
+            },
+            0x01 ..= 0x0F => Some(Tempo::SlideDown(y.cast())),
+            0x11 ..= 0x1F => Some(Tempo::SlideUp(y.cast())),
+            0x20 ..= 0xFF => Some(Tempo::Set(param.cast())),
+        }),
+        'U' => EffectCmd::FineVibrato((x > 0).then(|| x.cast()), (y > 0).then(|| y.cast())),
+        'V' => EffectCmd::SetGlobalVolume({
+            if param > 0x80 {
+                log(format!("GlobalVolume cannot be larger than 0x80, found {:#02X}, clipping value", param));
+                0x80.cast()
+            } else {
+                param.cast()
+            }
+        }),
+        // 'W' is handled together with 'D' above.
+        'X' => EffectCmd::SetPanningPosition(param),
+        'Y' => EffectCmd::Panbrello((x > 0).then(|| x.cast()), (y > 0).then(|| y.cast())),
+        'Z' => EffectCmd::MIDI(param),
+        _ => {
+            log(format!("invalid effect {:#x} out of range 0x0..=0x1A, skipping", effect));
+            return None;
+        },
+    })
 }
 
 
@@ -535,10 +584,10 @@ mod test {
             EffectCmd::TonePortamento(Some(0x42.cast())),
 
             // H
-            EffectCmd::Vibrato(6.cast(), 7.cast()),
+            EffectCmd::Vibrato(Some(6.cast()), Some(7.cast())),
 
             // I
-            EffectCmd::Tremor(1.cast(), 5.cast()),
+            EffectCmd::Tremor(Some((1.cast(), 5.cast()))),
 
             // J
             EffectCmd::Arpeggio(Some((2.cast(), 3.cast()))),
@@ -572,39 +621,39 @@ mod test {
             // -- omitted invalid `P12`
 
             // Q
-            EffectCmd::Retrigger(0xA.cast(), 0xB.cast()),
+            EffectCmd::Retrigger(Some((0xA.cast(), 0xB.cast()))),
 
             // R
-            EffectCmd::Tremolo(0xC.cast(), 0xD.cast()),
+            EffectCmd::Tremolo(Some(0xC.cast()), Some(0xD.cast())),
 
             // S
-            EffectCmd::Set(None),
-            EffectCmd::Set(None),
-            EffectCmd::Set(Some(Set::Glissando(false))),
-            EffectCmd::Set(Some(Set::Glissando(true))),
-            EffectCmd::Set(Some(Set::Glissando(true))),
-            EffectCmd::Set(Some(Set::Finetune(0xD.cast()))),
-            EffectCmd::Set(Some(Set::VibratoWaveform(Waveform::Sawtooth))),
-            EffectCmd::Set(Some(Set::TremoloWaveform(Waveform::Square))),
-            EffectCmd::Set(Some(Set::PanbrelloWaveform(Waveform::Random))),
-            EffectCmd::Set(Some(Set::PatternTickDelay(0x6.cast()))),
-            EffectCmd::Set(Some(Set::PastNote(SetPastNote::Cut))),
-            EffectCmd::Set(Some(Set::NewNoteAction(SetNewNoteAction::Continue))),
-            EffectCmd::Set(Some(Set::PitchEnvelope(true))),
-            EffectCmd::Set(Some(Set::Surround(true))),
-            EffectCmd::Set(Some(Set::FilterMode(FilterMode::Local))),
-            EffectCmd::Set(Some(Set::LoopbackPoint)),
-            EffectCmd::Set(Some(Set::LoopbackTimes(0x3.cast()))),
-            EffectCmd::Set(Some(Set::PatternRowDelay(0xD.cast()))),
-            EffectCmd::Set(Some(Set::MIDIParam(0xF.cast()))),
+            EffectCmd::Special(None),
+            EffectCmd::Special(None),
+            EffectCmd::Special(Some(Special::SetGlissando(false))),
+            EffectCmd::Special(Some(Special::SetGlissando(true))),
+            EffectCmd::Special(Some(Special::SetGlissando(true))),
+            EffectCmd::Special(Some(Special::SetFinetune(0xD.cast()))),
+            EffectCmd::Special(Some(Special::SetVibratoWaveform(Waveform::Sawtooth))),
+            EffectCmd::Special(Some(Special::SetTremoloWaveform(Waveform::Square))),
+            EffectCmd::Special(Some(Special::SetPanbrelloWaveform(Waveform::Random))),
+            EffectCmd::Special(Some(Special::PatternTickDelay(0x6.cast()))),
+            EffectCmd::Special(Some(Special::PastNote(SetPastNote::Cut))),
+            EffectCmd::Special(Some(Special::SetNewNoteAction(SetNewNoteAction::Continue))),
+            EffectCmd::Special(Some(Special::SetPitchEnvelope(true))),
+            EffectCmd::Special(Some(Special::SetSurround(true))),
+            EffectCmd::Special(Some(Special::SetFilterMode(FilterMode::Local))),
+            EffectCmd::Special(Some(Special::SetLoopbackPoint)),
+            EffectCmd::Special(Some(Special::LoopbackTimes(0x3.cast()))),
+            EffectCmd::Special(Some(Special::PatternRowDelay(0xD.cast()))),
+            EffectCmd::Special(Some(Special::SetMIDIParam(0xF.cast()))),
 
             // T
-            EffectCmd::Tempo(Tempo::SlideDown(1.cast())),
-            EffectCmd::Tempo(Tempo::SlideUp(2.cast())),
-            EffectCmd::Tempo(Tempo::Set(0x23.cast())),
+            EffectCmd::Tempo(Some(Tempo::SlideDown(1.cast()))),
+            EffectCmd::Tempo(Some(Tempo::SlideUp(2.cast()))),
+            EffectCmd::Tempo(Some(Tempo::Set(0x23.cast()))),
 
             // U
-            EffectCmd::FineVibrato(0xA.cast(), 0xC.cast()),
+            EffectCmd::FineVibrato(Some(0xA.cast()), Some(0xC.cast())),
 
             // V
             EffectCmd::SetGlobalVolume(0x42.cast()),
@@ -622,7 +671,7 @@ mod test {
             EffectCmd::SetPanningPosition(0x67),
 
             // Y
-            EffectCmd::Panbrello(1.cast(), 3.cast()),
+            EffectCmd::Panbrello(Some(1.cast()), Some(3.cast())),
 
             // Z
             EffectCmd::MIDI(0xF1),
