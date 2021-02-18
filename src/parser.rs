@@ -145,6 +145,7 @@ where
 
     // Parse dynamic parts of the header.
     let (input, orders) = count(order, ordnum as usize)(input)?;
+    let orders = orders.into_iter().filter_map(|x|x).collect();
     let (input, ins_offsets) = count(le_u32, insnum as usize)(input)?;
     let (input, sam_offsets) = count(le_u32, smpnum as usize)(input)?;
     let (_rest, pat_offsets) = count(le_u32, patnum as usize)(input)?;
@@ -177,19 +178,18 @@ where
     ))
 }
 
-fn order<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], Order, E> {
-    let (input, byte) = le_u8(input)?;
-    let order = match byte {
-        0..=199 => Order::Index(byte.cast()),
-        200..=253 => {
-            // TODO ITTECH.TXT says only 0..=199 are allowed, but 200..=253 are not used for
-            // anything else so we could parse them too.
-            return Err(Err::Error(E::from_error_kind(input, ErrorKind::Verify)));
+fn order<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], Option<Order>, E> {
+    map(
+        le_u8,
+        |byte| match byte {
+            0 ..= 199 => Some(Order::Index(byte.cast())),
+            254 => Some(Order::Separator),
+            255 => Some(Order::EndOfSong),
+            // Invalid values get skipped.
+            // TODO log errors
+            _ => None,
         },
-        254 => Order::Separator,
-        255 => Order::EndOfSong,
-    };
-    Ok((input, order))
+    )(input)
 }
 
 fn name<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], Name, E> {

@@ -1,11 +1,14 @@
 //! Data type definitions.
 
 
+use crate::error::OutOfRangeError;
 pub(crate) use bitflags::bitflags;
+use std::convert::TryFrom;
+use std::fmt::{self, Debug};
 
 
 macro_rules! ranged_u8_newtype {
-    ( $name: ident, $range: expr ) => {
+    ( $name: ident, $low: literal ..= $high: literal ) => {
         #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq)]
         pub struct $name(u8);
 
@@ -15,19 +18,14 @@ macro_rules! ranged_u8_newtype {
             }
         }
 
-        impl ::std::convert::TryFrom<u8> for $name {
-            type Error = ::std::num::TryFromIntError;
+        impl TryFrom<u8> for $name {
+            type Error = OutOfRangeError<$low, $high>;
 
             fn try_from(raw: u8) -> Result<Self, Self::Error> {
-                fn _typecheck(_: impl ::std::ops::RangeBounds<u8>) {}
-                _typecheck($range);
-
-                if $range.contains(&raw) {
+                if ($low..=$high).contains(&raw) {
                     Ok($name(raw))
                 } else {
-                    // There is no public constructor for `TryFromIntError` so we obtain it through a
-                    // definitely-out-of-range cast ... :/
-                    Err(u8::try_from(u16::MAX).unwrap_err())
+                    Err(OutOfRangeError(raw))
                 }
             }
         }
@@ -38,9 +36,9 @@ macro_rules! ranged_u8_newtype {
             }
         }
 
-        impl ::std::fmt::Debug for $name {
-            fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-                ::std::fmt::Debug::fmt(&self.as_u8(), f)
+        impl Debug for $name {
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                Debug::fmt(&self.as_u8(), f)
             }
         }
     };

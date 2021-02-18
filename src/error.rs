@@ -8,10 +8,22 @@ use nom::error::{ErrorKind, ParseError};
 use nom::{Err, IResult};
 use nom::{Offset, Parser};
 use std::borrow::Cow;
-use std::fmt::{Debug, Write};
+use std::fmt::{self, Debug, Display, Write};
 use std::iter;
 
 pub use crate::parser::scan::ScanError;
+
+
+#[derive(Debug)]
+pub struct OutOfRangeError<const LOW: u8, const HIGH: u8>(pub(crate) u8);
+
+impl<const LOW: u8, const HIGH: u8> Display for OutOfRangeError<LOW, HIGH> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "conversion failed, value {} is out of range {}..={}", self.0, LOW, HIGH)
+    }
+}
+
+impl<const LOW: u8, const HIGH: u8> std::error::Error for OutOfRangeError<LOW, HIGH> {}
 
 
 /// This error type accumulates errors and their position when backtracking

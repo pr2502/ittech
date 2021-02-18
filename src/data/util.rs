@@ -1,7 +1,6 @@
+use crate::error::OutOfRangeError;
 use std::convert::TryFrom;
 use std::fmt::{self, Write};
-use std::num::TryFromIntError;
-
 
 #[derive(Clone, Copy)]
 pub struct Name {
@@ -24,14 +23,13 @@ impl<const LOW: u8, const HIGH: u8> RangedU8<LOW, HIGH> {
 }
 
 impl<const LOW: u8, const HIGH: u8> TryFrom<u8> for RangedU8<LOW, HIGH> {
-    type Error = TryFromIntError;
+    type Error = OutOfRangeError<LOW, HIGH>;
+
     fn try_from(raw: u8) -> Result<Self, Self::Error> {
         if (LOW..=HIGH).contains(&raw) {
             Ok(RangedU8(raw))
         } else {
-            // There is no public constructor for `TryFromIntError` so we obtain it through a
-            // definitely-out-of-range cast ... :/
-            Err(u8::try_from(u16::MAX).unwrap_err())
+            Err(OutOfRangeError(raw))
         }
     }
 }

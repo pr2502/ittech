@@ -27,9 +27,7 @@ primitive and unoptimized.
 documentation
 -------------
 
-Documentation can be seen on [docs.rs] once the crate is published.
-
-[docs.rs]: https://docs.rs/ittech
+Documentation can be seen at [docs.rs/ittech](https://docs.rs/ittech).
 
 
 One of the main focuses of the library is to document the file format as best
