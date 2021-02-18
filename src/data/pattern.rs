@@ -1,7 +1,7 @@
 use super::*;
+use crate::error::OutOfRangeError;
 use std::convert::TryFrom;
 use std::fmt::{self, Debug, Display};
-use std::num::TryFromIntError;
 use std::str;
 
 
@@ -473,6 +473,7 @@ pub enum EffectCategory {
 /// Effects `Dxx`, `Kxx`, `Lxx`, `Nxx`, `Wxx`
 ///
 /// All of these commands perform a volume slide but on different mixers.
+/// Operations on the values are saturating.
 ///
 /// - `Dxx`, `Kxx`, `Lxx` - note volume slide
 /// - `Nxx` - channel volume slide
@@ -481,6 +482,12 @@ pub enum EffectCategory {
 /// ## Canonicalization
 /// Values where both nibbles are in `1..=0xE` at the same time don't have a defined meaning, these
 /// get skipped by the parser.
+///
+/// Value `0xFF` gets parsed by OpenMPT and Schism Tracker as `FineUp(0xF)`, however this makes it
+/// non-symmetrical and also doesn't agree with OpenMPT documentation and makes the parsing
+/// somewhat ambiguous (although at least two implementations agree on the way to parse it).
+/// We enforce that `FineUp` cannot exceed `0xE`. We parse the value `0xFF` the same way as `0xEF`
+/// for compatibilty with these trackers.
 // TODO describe volume slide units
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum VolumeSlide {
@@ -493,7 +500,6 @@ pub enum VolumeSlide {
     /// `Dx0`, `Kx0`, `Lx0`, `Nx0`, `Wx0` Volume slide up by `x`
     ///
     /// Increases mixer volume by `x` units on every tick of the row except the first.
-    /// Volume will not exceed `0x40`.
     Up(RangedU8<1, 0x0F>),
 
     /// `DFx`, `KFx`, `LFx`, `NFx`, `WFx` Fine volume slide down by `x`
@@ -504,10 +510,7 @@ pub enum VolumeSlide {
     /// `DxF`, `KxF`, `LxF`, `NxF`, `WxF` Fine volume slide up by `x`
     ///
     /// Finely increases mixer volume by only applying `x` units on the first tick of the row.
-    ///
-    /// OpenMPT documents that this value cannot be `0xF` however both OpenMPT and Schism Tracker
-    /// parse it this way so we allow it too.
-    FineUp(RangedU8<1, 0x0F>),
+    FineUp(RangedU8<1, 0x0E>),
 }
 
 /// Effects `Exx`, `Fxx`
@@ -566,23 +569,35 @@ pub enum SetSampleOffset {
 /// Effect `Pxx` Panning slide
 ///
 /// Slides the current channel's panning position left or right.
+/// Operations on the panning position are saturating.
 ///
 /// ## Canonicalization
 /// Values where both nibbles are in `1..=0xE` at the same time don't have a defined meaning, these
 /// get skipped by the parser.
+///
+/// Value `0xFF` gets parsed like `FineLeft(0xE)`, see [`VolumeSlide`] for details, it uses the
+/// same underlying encoding.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PanningSlide {
     /// `P0x` Panning slide to right by `x`
+    ///
+    /// Slides the panning to the right by `x` units on every tick of the row except the first.
     Right(RangedU8<1, 0x0F>),
 
     /// `Px0` Panning slide to left by `x`
+    ///
+    /// Slides the panning to the left by `x` units on every tick of the row except the first.
     Left(RangedU8<1, 0x0F>),
 
     /// `PFx` Fine panning slide to right by `x`
-    FineRight(RangedU8<1, 0x0F>),
+    ///
+    /// Finely slides the panning to the right by only applying y units on the first tick of the row.
+    FineRight(RangedU8<1, 0x0E>),
 
     /// `PxF` Fine panning slide to left by `x`
-    FineLeft(RangedU8<1, 0x0F>),
+    ///
+    /// Finely slides the panning to the left by only applying x units on the first tick of the row.
+    FineLeft(RangedU8<1, 0x0E>),
 }
 
 /// Effect `Sxx` Special commands
@@ -857,16 +872,13 @@ impl_index_from_get!(Row, Channel);
 
 
 impl TryFrom<u8> for Note {
-    type Error = TryFromIntError;
+    type Error = OutOfRangeError<0, 119>;
+
     fn try_from(raw: u8) -> Result<Self, Self::Error> {
         if (0..=119).contains(&raw) {
             Ok(Note(raw))
         } else {
-            // There is no public constructor for `TryFromIntError` so we obtain it through a
-            // definitely-out-of-range cast ... :/
-            //
-            // TODO make a custom error for the ranged integers and replace this nonsense.
-            Err(u8::try_from(u16::MAX).unwrap_err())
+            Err(OutOfRangeError(raw))
         }
     }
 }
@@ -880,6 +892,8 @@ impl From<Note> for u8 {
 /// Creates a formatted string for the note in the given buffer
 const fn note_string(Note(idx): Note, buf: &mut [u8; 3]) -> &str {
     if idx >= 120 {
+        // This is just a sanity check for the macros. This invariant should be already enforced by
+        // the Note type itself at the module boundary.
         panic!("Note inner value is out of range of 0..=119");
     }
     const NAMES: [&[u8; 2]; 12] = [b"C-", b"C#", b"D-", b"D#", b"E-", b"F-", b"F#", b"G-", b"G#", b"A-", b"A#", b"B-"];

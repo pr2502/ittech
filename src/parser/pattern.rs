@@ -337,8 +337,15 @@ pub fn parse_effect(effect: u8, param: u8, log: Option<&mut Vec<String>>) -> Opt
                 // OpenMPT wiki says that `FineUp` and `FineDown` parameters can never be `0xF`
                 // however both OpenMPT and Schism Tracker seem to allow `0xF` with `FineUp`.
                 //
-                // TODO We might want to clip it to `0xE` in the future for the sake of symmetry.
-                (p, 0xF) => Some(VolumeSlide::FineUp(p.cast())),
+                // We clip it to `0xE` to keep some compatibility with these trackers.
+                (p, 0xF) => Some(VolumeSlide::FineUp({
+                    if p == 0xF {
+                        log("VolumeSlide::FineUp can only be 0xE, clipping.".into());
+                        0xE.cast()
+                    } else {
+                        p.cast()
+                    }
+                })),
                 (0xF, p) => Some(VolumeSlide::FineDown(p.cast())),
 
                 // x, y are nibbles. These values are unrepresentable.
@@ -399,13 +406,19 @@ pub fn parse_effect(effect: u8, param: u8, log: Option<&mut Vec<String>>) -> Opt
         'O' => EffectCmd::SetSampleOffset(SetSampleOffset::Low(param)),
         'S' if x == 0xA => EffectCmd::SetSampleOffset(SetSampleOffset::High(y.cast())),
         'P' => EffectCmd::PanningSlide(match (x, y) {
-            // TODO This parsing requires the same treatment as the `VolumeSlide` family of
-            //      effects: comparison with OMPT/ST implementation and documentation.
+            // PanningSlide uses the same format as VolumeSlide, see comments above for details.
             (0x0, 0x0) => None,
-            (0x0, p) => Some(PanningSlide::Right(p.cast())),
             (p, 0x0) => Some(PanningSlide::Left(p.cast())),
+            (0x0, p) => Some(PanningSlide::Right(p.cast())),
+            (p, 0xF) => Some(PanningSlide::FineLeft({
+                if p == 0xF {
+                    log("PanningSlide::FineLeft can only be 0xE, clipping.".into());
+                    0xE.cast()
+                } else {
+                    p.cast()
+                }
+            })),
             (0xF, p) => Some(PanningSlide::FineRight(p.cast())),
-            (p, 0xF) => Some(PanningSlide::FineLeft(p.cast())),
             (0x10..=0xFF, _) | (_, 0x10..=0xFF) => unreachable!(), // x, y are nibbles.
 
             // Invalid values are handled the same way as with `VolumeSlide`.

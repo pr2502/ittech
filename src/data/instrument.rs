@@ -9,7 +9,9 @@ pub struct Instrument {
     pub samples: Vec<Sample>,
 }
 
-// TODO do not expose header in the public API, move its data into `Instrument` directly
+// TODO Do not expose header in the public API, move its data into `Instrument` directly.
+//      This requires sharing `Sample`s between instruments, or some other way to remove
+//      `InstrumentHeader` from `Module` public API.
 #[derive(Clone, Debug)]
 pub struct InstrumentHeader {
     /// Instrument Name, null-terminated (but may also contain nulls)
