@@ -39,7 +39,7 @@ pub struct Row {
 /// Pattern command
 ///
 /// Command is one cell on the pattern table.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Command {
     pub note: Option<NoteCmd>,
     pub instrument: Option<InstrumentId>,
@@ -451,7 +451,7 @@ pub enum EffectCmd {
     ///
     /// This effect is rather complicated so we don't attempt to parse it any further. For more
     /// information see the [OpenMPT wiki article](https://wiki.openmpt.org/Manual:_Zxx_Macros).
-    MIDI(u8),
+    Midi(u8),
 }
 
 /// Effect category
@@ -722,7 +722,7 @@ pub enum Special {
     PatternRowDelay(RangedU8<0, 0x0F>),
 
     /// `SFx` Set parameterised MIDI Macro
-    SetMIDIParam(RangedU8<0, 0x0F>),
+    SetMidiParam(RangedU8<0, 0x0F>),
 }
 
 /// Oscillator waveforms for commands `S3x`, `S4x` and `S5x`
@@ -890,19 +890,20 @@ impl From<Note> for u8 {
 }
 
 /// Creates a formatted string for the note in the given buffer
-const fn note_string(Note(idx): Note, buf: &mut [u8; 3]) -> &str {
-    if idx >= 120 {
-        // This is just a sanity check for the macros. This invariant should be already enforced by
-        // the Note type itself at the module boundary.
-        panic!("Note inner value is out of range of 0..=119");
-    }
+fn note_string(Note(idx): Note, buf: &mut [u8; 3]) -> &str {
+    // This is just a sanity check for the macros. This invariant should be already enforced by the
+    // Note type itself at the module boundary.
+    assert!(idx < 120, "Note inner value is out of range of 0..=119");
+
     const NAMES: [&[u8; 2]; 12] = [b"C-", b"C#", b"D-", b"D#", b"E-", b"F-", b"F#", b"G-", b"G#", b"A-", b"A#", b"B-"];
-    let name = NAMES[(idx % 12) as usize];
+    let name = NAMES[usize::from(idx % 12)];
     let octave = b'0' + (idx / 12);
+
     buf[0] = name[0];
     buf[1] = name[1];
     buf[2] = octave;
-    // SAFETY This function fills the buffer with valid UTF-8 itself.
+
+    // SAFETY This function itself fills the buffer with valid UTF-8 (ASCII).
     unsafe { str::from_utf8_unchecked(&*buf) }
 }
 
@@ -922,9 +923,9 @@ impl Display for Note {
 
 impl Note {
     /// Convert note into its frequency in A=440Hz tuning
-    pub fn freq(&self) -> f32 {
-        let (Note(idx), Note(base)) = (*self, Note::A_4);
-        let exp = ((idx as f32) - (base as f32)) / 12.0f32;
+    pub fn freq(self) -> f32 {
+        let (Note(idx), Note(base)) = (self, Note::A_4);
+        let exp = (f32::from(idx) - f32::from(base)) / 12.0f32;
         440.0f32 * 2.0f32.powf(exp)
     }
 }

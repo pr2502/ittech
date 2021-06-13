@@ -8,7 +8,7 @@ pub struct Name {
 }
 
 #[derive(Clone, Copy)]
-pub struct DOSFilename {
+pub struct DosFilename {
     pub bytes: [u8; 13],
 }
 
@@ -51,7 +51,7 @@ fn debug_bytestring(bytes: &[u8], f: &mut fmt::Formatter) -> fmt::Result {
     f.write_char('"')?;
     for &byte in null_terminated(bytes) {
         if byte.is_ascii_graphic() || byte == b' ' {
-            f.write_char(byte as char)?;
+            f.write_char(byte.into())?;
         } else {
             write!(f, "<0x{:02X}>", byte)?;
         }
@@ -65,7 +65,7 @@ impl fmt::Debug for Name {
     }
 }
 
-impl fmt::Debug for DOSFilename {
+impl fmt::Debug for DosFilename {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         debug_bytestring(&self.bytes, f)
     }
@@ -77,7 +77,7 @@ impl fmt::Display for Name {
     }
 }
 
-impl fmt::Display for DOSFilename {
+impl fmt::Display for DosFilename {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         String::from_utf8_lossy(null_terminated(&self.bytes)).fmt(f)
     }

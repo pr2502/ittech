@@ -4,21 +4,18 @@ use std::fmt::{self, Debug};
 use std::ops::Index;
 
 #[derive(Clone, Debug)]
-pub struct Instrument {
-    pub header: InstrumentHeader,
+pub struct InstrumentFile {
+    pub instrument: Instrument,
     pub samples: Vec<Sample>,
 }
 
-// TODO Do not expose header in the public API, move its data into `Instrument` directly.
-//      This requires sharing `Sample`s between instruments, or some other way to remove
-//      `InstrumentHeader` from `Module` public API.
 #[derive(Clone, Debug)]
-pub struct InstrumentHeader {
+pub struct Instrument {
     /// Instrument Name, null-terminated (but may also contain nulls)
     pub name: Name,
 
     /// DOS Filename, null-terminated
-    pub filename: DOSFilename,
+    pub filename: DosFilename,
 
     pub flags: InstrumentFlags,
 
@@ -104,14 +101,14 @@ bitflags! {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct SampleMap {
     pub(crate) map: [Option<SampleId>; 120],
 }
 
 
 #[allow(non_upper_case_globals)]
-impl InstrumentHeader {
+impl Instrument {
     pub(crate) const dfp_ignorePanning: u8 = 0x80;
     pub(crate) const ifc_enableCutoff: u8 = 0x80;
     pub(crate) const ifr_enableResonance: u8 = 0x80;
@@ -140,7 +137,7 @@ impl Debug for SampleMap {
 impl Index<Note> for SampleMap {
     type Output = Option<SampleId>;
     fn index(&self, index: Note) -> &Self::Output {
-        &self.map[u8::from(index) as usize]
+        &self.map[usize::from(u8::from(index))]
     }
 }
 

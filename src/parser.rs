@@ -6,11 +6,21 @@ use bitflags::bitflags;
 use nom::bytes::complete::{tag, take};
 use nom::combinator::{all_consuming, map};
 use nom::error::{ErrorKind, ParseError};
+use nom::multi::{count, many_till};
 use nom::number::complete::{be_i16, le_i16, le_i8, le_u16, le_u32, le_u8};
 use nom::sequence::tuple;
 use nom::{Err, IResult};
 use pattern::pattern;
 use std::convert::{TryFrom, TryInto};
+use std::ops::RangeInclusive;
+
+
+macro_rules! info {
+    ( $($tt:tt)* ) => {
+        #[cfg(feature = "tracing")]
+        ::tracing::info!($($tt)*);
+    };
+}
 
 
 mod pattern;
@@ -24,18 +34,18 @@ pub use scan::scan;
 
 
 /// Parse Impulse Tracker module file (.it)
-pub fn module<'i, E>(input: &'i [u8]) -> Result<Module, Err<E>>
+pub fn module_file<'i, E>(input: &'i [u8]) -> Result<Module, Err<E>>
 where
     E: ParseError<&'i [u8]> + ContextError<&'i [u8]> + 'i,
 {
     let (_, header) = module_header(input)?;
 
     // Offsets are relative to the start of the file, use the whole input every time.
-    let (_, instrument_headers) = offset_list(instrument_header, header.instrument_offsets)(input)?;
+    let (_, instruments) = offset_list(instrument, header.instrument_offsets)(input)?;
     let (_, sample_headers) = offset_list(sample_header, header.sample_offsets)(input)?;
     let patterns = {
         let mut patterns = Vec::with_capacity(header.pattern_offsets.len());
-        for offset in header.pattern_offsets.into_iter().map(|o| o as usize) {
+        for offset in header.pattern_offsets.into_iter().map(<_>::cast) {
             // Pattern parsing is inlined from `offset_list` because we need to handle the special
             // case of offset 0 here.
             if offset == 0 {
@@ -59,11 +69,11 @@ where
         .collect::<Result<Vec<_>, _>>()?;
 
     let message = {
-        let offset = header.message_offset as usize;
+        let offset = header.message_offset.cast::<usize>();
         if offset == 0 || offset >= input.len() {
             String::new()
         } else {
-            let (_, bytes) = take(header.message_length as usize)(input)?;
+            let (_, bytes) = take(header.message_length.cast::<usize>())(input)?;
             String::from_utf8_lossy(bytes)
                 .to_string()
         }
@@ -85,27 +95,27 @@ where
         orders: header.orders,
         init_channel_panning: header.init_channel_panning,
         init_channel_volume: header.init_channel_volume,
-        instruments: instrument_headers,
+        instruments,
         samples,
         patterns,
     })
 }
 
 /// Parse Impulse Tracker instrument file (.iti)
-pub fn instrument<'i, E>(input: &'i [u8]) -> Result<Instrument, Err<E>>
+pub fn instrument_file<'i, E>(input: &'i [u8]) -> Result<InstrumentFile, Err<E>>
 where
     E: ParseError<&'i [u8]> + ContextError<&'i [u8]>,
 {
-    let (input2, header) = instrument_header(input)?;
-    let (_, sample_headers) = count(sample_header, header.number_of_samples as usize)(input2)?;
+    let (input2, instrument) = instrument(input)?;
+    let (_, sample_headers) = count(sample_header, instrument.number_of_samples.into())(input2)?;
     let samples = sample_headers.into_iter()
         .map(|header| sample_data(header, input))
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(Instrument { header, samples })
+    Ok(InstrumentFile { instrument, samples })
 }
 
 /// Parse Impulse Tracker sample file (.its)
-pub fn sample<'i, E>(input: &'i [u8]) -> Result<Sample, Err<E>>
+pub fn sample_file<'i, E>(input: &'i [u8]) -> Result<Sample, Err<E>>
 where
     E: ParseError<&'i [u8]> + ContextError<&'i [u8]>,
 {
@@ -131,11 +141,11 @@ where
     let (input, cmwt) = le_u16(input)?;
     let (input, flags) = le_u16(input)?;
     let (input, special) = le_u16(input)?;
-    let (input, globalvol) = ranged(le_u8, 0..=128)(input)?;
-    let (input, mv) = ranged(le_u8, 0..=128)(input)?;
-    let (input, speed) = ranged(le_u8, 1..=255)(input)?;
-    let (input, tempo) = ranged(le_u8, 31..=255)(input)?;
-    let (input, sep) = ranged(le_u8, 0..=128)(input)?;
+    let (input, globalvol) = le_u8(input)?;
+    let (input, mv) = le_u8(input)?;
+    let (input, speed) = le_u8(input)?;
+    let (input, tempo) = le_u8(input)?;
+    let (input, sep) = le_u8(input)?;
     let (input, pwd) = le_u8(input)?;
     let (input, msglength) = le_u16(input)?;
     let (input, msgoffset) = le_u32(input)?;
@@ -144,13 +154,44 @@ where
     let (input, chnvol) = byte_array(input)?;
 
     // Parse dynamic parts of the header.
-    let (input, orders) = count(order, ordnum as usize)(input)?;
-    let orders = orders.into_iter().filter_map(|x|x).collect();
-    let (input, ins_offsets) = count(le_u32, insnum as usize)(input)?;
-    let (input, sam_offsets) = count(le_u32, smpnum as usize)(input)?;
-    let (_rest, pat_offsets) = count(le_u32, patnum as usize)(input)?;
+    let (input, orders) = count(order, ordnum.into())(input)?;
+    let orders = orders.into_iter().flatten().collect();
+    let (input, ins_offsets) = count(le_u32, insnum.into())(input)?;
+    let (input, sam_offsets) = count(le_u32, smpnum.into())(input)?;
+    let (_rest, pat_offsets) = count(le_u32, patnum.into())(input)?;
 
     let flags = ModuleFlags::from_parts(flags, special);
+
+    // Check ranged values and canonicalize out-of-range values.
+    fn ranged(value: u8, range: RangeInclusive<u8>, or_else: impl FnOnce(u8) -> u8) -> u8 {
+        if range.contains(&value) {
+            value
+        } else {
+            let value = or_else(value);
+            debug_assert!(range.contains(&value));
+            value
+        }
+    }
+    let globalvol = ranged(globalvol, 0..=128, |_| {
+        info!(globalvol, "global_volume cannot be more than 128, clipping");
+        128
+    });
+    let mv = ranged(mv, 0..=128, |_| {
+        info!(mv, "sample_volume cannot be more than 128, clipping");
+        128
+    });
+    let speed = ranged(speed, 1..=255, |_| {
+        info!("speed must be at least 1, using default of 6");
+        6
+    });
+    let tempo = ranged(tempo, 31..=255, |_| {
+        info!("tempo must be at least 31, using default of 120");
+        120
+    });
+    let sep = ranged(sep, 31..=255, |_| {
+        info!("pan_separation cannot be more than 128, clipping");
+        128
+    });
 
     Ok((
         input,
@@ -160,11 +201,11 @@ where
             made_with_version: cwtv,
             compatible_with_version: cmwt,
             flags,
-            global_volume: globalvol.try_into().unwrap(),
-            sample_volume: mv.try_into().unwrap(),
-            speed: speed.try_into().unwrap(),
-            tempo: tempo.try_into().unwrap(),
-            pan_separation: sep.try_into().unwrap(),
+            global_volume: globalvol.cast(),
+            sample_volume: mv.cast(),
+            speed: speed.cast(),
+            tempo: tempo.cast(),
+            pan_separation: sep.cast(),
             pitch_wheel_depth: pwd,
             message_length: msglength,
             message_offset: msgoffset,
@@ -181,13 +222,15 @@ where
 fn order<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], Option<Order>, E> {
     map(
         le_u8,
-        |byte| match byte {
-            0 ..= 199 => Some(Order::Index(byte.cast())),
+        |value| match value {
+            0 ..= 199 => Some(Order::Index(value.cast())),
             254 => Some(Order::Separator),
             255 => Some(Order::EndOfSong),
             // Invalid values get skipped.
-            // TODO log errors
-            _ => None,
+            _ => {
+                info!(value, "order value is out of range 0..=199,254,255, skipping");
+                None
+            }
         },
     )(input)
 }
@@ -197,12 +240,12 @@ fn name<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -
     Ok((input, Name { bytes }))
 }
 
-fn dosfilename<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], DOSFilename, E> {
+fn dosfilename<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], DosFilename, E> {
     let (input, bytes) = byte_array(input)?;
-    Ok((input, DOSFilename { bytes }))
+    Ok((input, DosFilename { bytes }))
 }
 
-fn instrument_header<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], InstrumentHeader, E> {
+fn instrument<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], Instrument, E> {
     let (input, _) = tag(b"IMPI")(input)?;
     let (input, filename) = dosfilename(input)?;
     let (input, nna) = le_u8(input)?;
@@ -232,24 +275,24 @@ fn instrument_header<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input
 
     let mut flags = InstrumentFlags::default();
 
-    if dfp & InstrumentHeader::dfp_ignorePanning == 0 {
+    if dfp & Instrument::dfp_ignorePanning == 0 {
         flags |= InstrumentFlags::ENABLE_PANNING;
     }
-    let dfp = dfp & !InstrumentHeader::dfp_ignorePanning;
+    let dfp = dfp & !Instrument::dfp_ignorePanning;
 
-    if ifc & InstrumentHeader::ifc_enableCutoff != 0 {
+    if ifc & Instrument::ifc_enableCutoff != 0 {
         flags |= InstrumentFlags::ENABLE_FILTER_CUTOFF;
     }
-    let ifc = ifc & !InstrumentHeader::ifc_enableCutoff;
+    let ifc = ifc & !Instrument::ifc_enableCutoff;
 
-    if ifr & InstrumentHeader::ifr_enableResonance != 0 {
+    if ifr & Instrument::ifr_enableResonance != 0 {
         flags |= InstrumentFlags::ENABLE_FILTER_RESONANCE;
     }
-    let ifr = ifr & !InstrumentHeader::ifr_enableResonance;
+    let ifr = ifr & !Instrument::ifr_enableResonance;
 
     Ok((
         input,
-        InstrumentHeader {
+        Instrument {
             name,
             filename,
             flags,
@@ -281,12 +324,23 @@ fn instrument_header<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input
 fn sample_map<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], SampleMap, E> {
     scan_count(
         120,
-        tuple((ranged(le_u8, 0..=119), ranged(le_u8, 0..=99))),
+        tuple((le_u8, le_u8)),
         SampleMap::default(),
         |sm: &mut SampleMap, (note, sample)| {
-            if sample > 0 {
-                let sample = SampleId::try_from(sample - 1).unwrap();
-                sm.map[note as usize] = Some(sample);
+            match (note, sample) {
+                (0..=119, 0) => {
+                    // Explicit map to None, but don't override previous mapping.
+                }
+                (0..=119, 1..=99) => {
+                    let sample = SampleId::try_from(sample - 1).unwrap();
+                    sm.map[usize::from(note)] = Some(sample);
+                }
+                _ => {
+                    info!(
+                        note, sample,
+                        "note or sample out of range 0..=119 and 0..=99 respectively"
+                    );
+                }
             }
         },
     )(input)
@@ -294,29 +348,52 @@ fn sample_map<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [
 
 fn envelope<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(input: &'i [u8]) -> IResult<&'i [u8], Envelope, E> {
     let (input, flags) = le_u8(input)?;
-    let (input, num) = context!(ranged(le_u8, 0..=25), "reading envelope size")(input)?;
+    let (input, num) = le_u8(input)?;
     let (input, lpb) = le_u8(input)?;
     let (input, lpe) = le_u8(input)?;
     let (input, slb) = le_u8(input)?;
     let (input, sle) = le_u8(input)?;
-    let (input, data) = array(node)(input)?;
+    let (input, data): (_, [_; 25]) = array(node)(input)?;
     let (input, _reserved) = le_u8(input)?;
 
+    let envelope_loop;
+    let sustain_loop;
+    let num = if num > 25 {
+        info!(len = num, "envelope size out of range 0..=25, using 0");
+        envelope_loop = None;
+        sustain_loop = None;
+        0
+    } else {
+        envelope_loop = if lpb <= lpe && lpe < num {
+            Some(EnvelopeLoop { start: lpb, end: lpe })
+        } else {
+            info!(
+                start = lpb, end = lpe, len = num,
+                "invalid loop points, ignoring envelope loop",
+            );
+            None
+        };
+        sustain_loop = if slb <= sle && sle < num {
+            Some(EnvelopeLoop { start: slb, end: sle })
+        } else {
+            info!(
+                start = lpb, end = lpe, len = num,
+                "invalid loop points, ignoring sustain loop",
+            );
+            None
+        };
+        num
+    };
+
     let flags = EnvelopeFlags::from_bits_truncate(flags);
-    let data: [_; 25] = data;
-    assert!(num <= 25);
-    assert!(lpb <= lpe);
-    assert!(lpe < num);
-    assert!(slb <= sle);
-    assert!(sle < num);
-    let nodes = Vec::from(&data[..(num as usize)]);
+    let nodes = Vec::from(&data[..usize::from(num)]);
 
     Ok((
         input,
         Envelope {
             flags,
-            loop_: EnvelopeLoop { start: lpb, end: lpe },
-            sustain_loop: EnvelopeLoop { start: slb, end: sle },
+            envelope_loop,
+            sustain_loop,
             nodes,
         },
     ))
@@ -423,8 +500,8 @@ where
         assert!(!flags.contains(SampleFlags::DELTA), "delta samples are not supported");
         assert!(!flags.contains(SampleFlags::PTM8_TO_16), "PTM loader is not supported");
 
-        let offset = header.data_offset as usize;
-        let length = header.data_length as usize;
+        let offset = header.data_offset.cast();
+        let length = header.data_length.cast();
         let input = &input[offset..];
 
         let (_, data) = match (

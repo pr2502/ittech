@@ -1,7 +1,17 @@
 #![feature(const_mut_refs)]
 #![feature(const_panic)]
 #![feature(const_str_from_utf8_unchecked)]
-#![feature(external_doc)]
+#![feature(stmt_expr_attributes)]
+
+// We use all these clippy lints to help avoid silent data loss in the parser/serializer,
+// none of these warnings should make it into a release.
+#![warn(clippy::as_conversions)]
+#![warn(clippy::cast_lossless)]
+#![warn(clippy::cast_possible_truncation)]
+#![warn(clippy::cast_possible_wrap)]
+#![warn(clippy::cast_precision_loss)]
+#![warn(clippy::cast_sign_loss)]
+#![warn(clippy::unnecessary_cast)]
 
 //! # Impulse Tracker module file parser and writer
 //!
@@ -16,7 +26,7 @@
 /// This is a file documenting Impulse Tracker taken from
 /// <https://github.com/schismtracker/schismtracker/wiki/ITTECH.TXT>
 ///
-#[doc(include = "../ITTECH.txt")]
+#[doc = include_str!("../ITTECH.txt")]
 pub mod ittech_txt {}
 
 #[macro_use]

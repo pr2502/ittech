@@ -21,7 +21,7 @@ impl Channel {
 
     /// Returns 0 based channel index (0..=63), as opposed to channel number (1..=64)
     pub fn as_usize(self) -> usize {
-        self.0.as_u8() as usize
+        self.0.as_u8().into()
     }
 
     /// Creates channel from channel index (0..=63), as opposed to channel number (1..=64)
@@ -63,7 +63,9 @@ impl ActiveChannels {
     }
 
     pub const fn count(self) -> usize {
-        self.0.count_ones() as usize
+        // NOTE 0..64 will always fit into an usize but we can't use .into() because const context
+        #[allow(clippy::as_conversions)]
+        { self.0.count_ones() as usize }
     }
 }
 

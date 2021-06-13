@@ -7,7 +7,7 @@ pub struct Sample {
     pub name: Name,
 
     /// DOS Filename, null-terminated
-    pub filename: DOSFilename,
+    pub filename: DosFilename,
 
     /// Global Volume
     pub global_volume: u8,
@@ -48,25 +48,25 @@ pub struct Sample {
 }
 
 pub(crate) struct SampleHeader {
-    pub name: Name,
-    pub filename: DOSFilename,
-    pub global_volume: u8,
-    pub default_volume: u8,
-    pub default_panning: u8,
-    pub loop_: Option<SampleLoop>,
-    pub sustain_loop: Option<SampleLoop>,
-    pub samplerate_c5: u32,
-    pub vibrato_speed: u8,
-    pub vibrato_depth: u8,
-    pub vibrato_rate: u8,
-    pub vibrato_type: u8,
+    pub(crate) name: Name,
+    pub(crate) filename: DosFilename,
+    pub(crate) global_volume: u8,
+    pub(crate) default_volume: u8,
+    pub(crate) default_panning: u8,
+    pub(crate) loop_: Option<SampleLoop>,
+    pub(crate) sustain_loop: Option<SampleLoop>,
+    pub(crate) samplerate_c5: u32,
+    pub(crate) vibrato_speed: u8,
+    pub(crate) vibrato_depth: u8,
+    pub(crate) vibrato_rate: u8,
+    pub(crate) vibrato_type: u8,
 
-    pub flags: SampleFlags,
-    pub data_offset: u32,
-    pub data_length: u32,
+    pub(crate) flags: SampleFlags,
+    pub(crate) data_offset: u32,
+    pub(crate) data_length: u32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct SampleLoop {
     /// Start - offset into the sample in samples
     pub start: u32,
@@ -122,6 +122,7 @@ bitflags! {
 
         /// Off: Samples are unsigned   } IT 2.01 and below use unsigned samples
         ///  On: Samples are signed     } IT 2.02 and above use signed samples
+        #[allow(clippy::identity_op)]
         const DATA_SIGNED = 1 << (0 + 8);
 
         // From OpenMPT:
@@ -158,8 +159,8 @@ bitflags! {
 }
 
 impl SampleFlags {
-    pub fn from_parts(flags: u8, cvt: u8) -> SampleFlags {
-        let bits = (flags as u16) | ((cvt as u16) << 8);
+    pub(crate) fn from_parts(flags: u8, cvt: u8) -> SampleFlags {
+        let bits = u16::from(flags) | (u16::from(cvt) << 8);
         SampleFlags::from_bits_truncate(bits)
     }
 }

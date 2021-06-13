@@ -15,7 +15,7 @@ fn main() -> Result<()> {
 
     let data = fs::read(&inpname)
         .with_context(|| format!("failed to read file {}", &inpname))?;
-    let module = match parser::module::<VerboseError<_>>(&data) {
+    let module = match parser::module_file::<VerboseError<_>>(&data) {
         Ok(module) => module,
         Err(Err::Error(e)) | Err(Err::Failure(e)) => {
             eprintln!("parser failed\n\n{}", convert_error(&data, e));
