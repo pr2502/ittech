@@ -2,6 +2,7 @@ use std::fmt::{self, Display};
 
 
 /// Impulse Tracker file types
+#[derive(Clone, Copy, Debug)]
 pub enum FileType {
     /// Module file
     ///

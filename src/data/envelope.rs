@@ -6,9 +6,9 @@ pub struct Envelope {
     /// Envelope Flags
     pub flags: EnvelopeFlags,
 
-    pub loop_: EnvelopeLoop,
+    pub envelope_loop: Option<EnvelopeLoop>,
 
-    pub sustain_loop: EnvelopeLoop,
+    pub sustain_loop: Option<EnvelopeLoop>,
 
     /// Envelope Node Positions / Values
     pub nodes: Vec<Node>,
@@ -44,7 +44,7 @@ pub struct Node {
 
 // TODO Is the loop an inclusive "interval"? That is, is the node marked as `end` used in the loop?
 //      Our guess would be yes, but check with OpenMPT code or interface first.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct EnvelopeLoop {
     /// Start - offset of the node
     pub start: u8,

@@ -49,7 +49,7 @@ pub struct Module {
     pub orders: Vec<Order>,
 
     /// Instrument headers (without samples)
-    pub instruments: Vec<InstrumentHeader>,
+    pub instruments: Vec<Instrument>,
 
     /// Samples
     pub samples: Vec<Sample>,
@@ -59,28 +59,28 @@ pub struct Module {
 }
 
 pub(crate) struct ModuleHeader {
-    pub name: Name,
-    pub highlight: (u8, u8),
-    pub made_with_version: u16,
-    pub compatible_with_version: u16,
-    pub flags: ModuleFlags,
-    pub global_volume: RangedU8<0, 128>,
-    pub sample_volume: RangedU8<0, 128>,
-    pub speed: RangedU8<1, 255>,
-    pub tempo: RangedU8<31, 255>,
-    pub pan_separation: RangedU8<0, 128>,
-    pub pitch_wheel_depth: u8,
-    pub message_length: u16,
-    pub message_offset: u32,
-    pub init_channel_panning: [u8; 64],
-    pub init_channel_volume: [u8; 64],
-    pub orders: Vec<Order>,
-    pub instrument_offsets: Vec<u32>,
-    pub sample_offsets: Vec<u32>,
-    pub pattern_offsets: Vec<u32>,
+    pub(crate) name: Name,
+    pub(crate) highlight: (u8, u8),
+    pub(crate) made_with_version: u16,
+    pub(crate) compatible_with_version: u16,
+    pub(crate) flags: ModuleFlags,
+    pub(crate) global_volume: RangedU8<0, 128>,
+    pub(crate) sample_volume: RangedU8<0, 128>,
+    pub(crate) speed: RangedU8<1, 255>,
+    pub(crate) tempo: RangedU8<31, 255>,
+    pub(crate) pan_separation: RangedU8<0, 128>,
+    pub(crate) pitch_wheel_depth: u8,
+    pub(crate) message_length: u16,
+    pub(crate) message_offset: u32,
+    pub(crate) init_channel_panning: [u8; 64],
+    pub(crate) init_channel_volume: [u8; 64],
+    pub(crate) orders: Vec<Order>,
+    pub(crate) instrument_offsets: Vec<u32>,
+    pub(crate) sample_offsets: Vec<u32>,
+    pub(crate) pattern_offsets: Vec<u32>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Order {
     Index(PatternId),
     Separator,
@@ -138,6 +138,7 @@ bitflags! {
         ///
         /// Note: v1.04+ of IT may have song messages of up to
         ///       8000 bytes included.
+        #[allow(clippy::identity_op)]
         const MESSAGE_ATTACHED = 1 << (0 + 16);
 
         /// MIDI configuration embedded
@@ -148,7 +149,7 @@ bitflags! {
 
 impl ModuleFlags {
     pub(crate) fn from_parts(flags: u16, special: u16) -> ModuleFlags {
-        let bits = (flags as u32) | ((special as u32) << 16);
+        let bits = u32::from(flags) | (u32::from(special) << 16);
         ModuleFlags::from_bits_truncate(bits)
     }
 }
@@ -156,16 +157,16 @@ impl ModuleFlags {
 impl Get<SampleId> for Module {
     type Output = Sample;
     fn get(&self, index: SampleId) -> Option<&Self::Output> {
-        self.samples.as_slice().get(index.as_u8() as usize)
+        self.samples.as_slice().get(usize::from(index.as_u8()))
     }
 }
 
 impl_index_from_get!(Module, SampleId);
 
 impl Get<InstrumentId> for Module {
-    type Output = InstrumentHeader;
+    type Output = Instrument;
     fn get(&self, index: InstrumentId) -> Option<&Self::Output> {
-        self.instruments.as_slice().get(index.as_u8() as usize)
+        self.instruments.as_slice().get(usize::from(index.as_u8()))
     }
 }
 
@@ -174,7 +175,7 @@ impl_index_from_get!(Module, InstrumentId);
 impl Get<PatternId> for Module {
     type Output = Pattern;
     fn get(&self, index: PatternId) -> Option<&Self::Output> {
-        self.patterns.as_slice().get(index.as_u8() as usize)
+        self.patterns.as_slice().get(usize::from(index.as_u8()))
     }
 }
 

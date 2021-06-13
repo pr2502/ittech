@@ -195,7 +195,7 @@ pub fn convert_error(
                 // ascii representation
                 for &byte in input[line_begin..].iter().take(16) {
                     if byte.is_ascii_graphic() || byte == b' ' {
-                        buf.push(byte as char);
+                        buf.push(char::from(byte));
                     } else {
                         buf.push('.');
                     }

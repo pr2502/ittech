@@ -9,7 +9,7 @@ fn main() -> Result<()> {
         .context("usage: cargo run --example dump -- <itmodule>")?;
     let data = fs::read(&fname)
         .with_context(|| format!("failed to read file {}", &fname))?;
-    match parser::module::<VerboseError<&[u8]>>(&data) {
+    match parser::module_file::<VerboseError<&[u8]>>(&data) {
         Ok(it) => println!("{:#X?}", it),
         Err(Err::Error(e)) | Err(Err::Failure(e)) => {
             eprintln!("parser failed\n\n{}", convert_error(&data, e));

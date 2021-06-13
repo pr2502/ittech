@@ -81,7 +81,7 @@ where
                     Row::from_vec(commands)
                 },
             ),
-            rows as usize,
+            rows.into(),
         )),
         "in pattern",
     )(input)?;
@@ -201,11 +201,14 @@ fn instrument<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(
     input: &'i [u8],
 ) -> IResult<&'i [u8], Option<InstrumentId>, E> {
     if mask_var.contains(Mask::READ_INSTRUMENT) && !mask_var.contains(Mask::LAST_INSTRUMENT) {
-        let (input, instrument) = context!(ranged(le_u8, 0..=99), "reading instrument id")(input)?;
+        let (input, instrument) = context!(le_u8, "reading instrument id")(input)?;
         let instrument = match instrument {
             0 => None,
             1 ..= 99 => Some((instrument - 1).try_into().unwrap()),
-            _ => unreachable!(), // Used `ranged` combinator to read the value.
+            _ => {
+                info!(instrument, "instrument id is out of range 1..=99, parsing as None");
+                None
+            }
         };
         state.last_instrument[channel.as_usize()] = instrument;
         Ok((input, instrument))
@@ -264,7 +267,7 @@ fn effect<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(
         let effect = if effect == 0x00 {
             None
         } else {
-            parse_effect(effect, param, None)
+            parse_effect(effect, param)
         };
         state.last_effect[channel.as_usize()] = effect;
         Ok((rest, effect))
@@ -286,20 +289,14 @@ fn effect<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(
 ///
 /// Feel free to report issues with any inconsistency between the results of this method and the
 /// documentation.
-pub fn parse_effect(effect: u8, param: u8, log: Option<&mut Vec<String>>) -> Option<EffectCmd> {
-    let log = move |msg: String| {
-        if let Some(log) = log {
-            log.push(msg.into());
-        }
-    };
-
+pub fn parse_effect(effect: u8, param: u8) -> Option<EffectCmd> {
     // Extract param nibbles.
     let (x, y) = (param >> 4, param & 0x0F);
 
     // Effects are numbered 0x1..=0x1A (or 1..=26 decimal), these numbers are represented
     // as capital leters in in tracker UI and documentation. We convert it to ascii char
     // range here to make the large match statement more readable.
-    let effect_code = (effect - 1 + b'A') as char;
+    let effect_code = char::from(effect - 1 + b'A');
 
     // For more information on the values here, see the documentation for `EffectCmd`
     // and its child enums.
@@ -311,7 +308,7 @@ pub fn parse_effect(effect: u8, param: u8, log: Option<&mut Vec<String>>) -> Opt
     // encountering an error.
     Some(match effect_code {
         'A' if param == 0 => {
-            log("effect `A00` does nothing, skipping".into());
+            info!("effect `A00` does nothing, skipping");
             return None;
         },
         'A' => EffectCmd::SetSpeed(param.cast()),
@@ -340,7 +337,7 @@ pub fn parse_effect(effect: u8, param: u8, log: Option<&mut Vec<String>>) -> Opt
                 // We clip it to `0xE` to keep some compatibility with these trackers.
                 (p, 0xF) => Some(VolumeSlide::FineUp({
                     if p == 0xF {
-                        log("VolumeSlide::FineUp can only be 0xE, clipping.".into());
+                        info!("VolumeSlide::FineUp cannot be more than 0xE, clipping");
                         0xE.cast()
                     } else {
                         p.cast()
@@ -359,11 +356,11 @@ pub fn parse_effect(effect: u8, param: u8, log: Option<&mut Vec<String>>) -> Opt
                 // is played. This inconsistency makes our API much cleaner and since these
                 // values are "invalid" anyway it shouldn't create any problems.
                 _ => {
-                    log(format!(
-                        "VolumeSlide parameters require exactly one nibble to be either `0x0` or `0xF`, \
-                        value parameters x={:#X}, y={:#X} don't satisfy this requirement, skipping",
+                    info!(
                         x, y,
-                    ));
+                        "VolumeSlide parameters require exactly one nibble to be either `0x0` or `0xF`, \
+                        value parameters don't satisfy this requirement, skipping",
+                    );
                     return None;
                 },
             };
@@ -396,7 +393,7 @@ pub fn parse_effect(effect: u8, param: u8, log: Option<&mut Vec<String>>) -> Opt
         // 'K' and 'L' are handled together with 'D' above.
         'M' => EffectCmd::SetChannelVolume({
             if param > 0x40 {
-                log(format!("ChannelVolume cannot be larger than 0x40, found {:#02X}, clipping value", param));
+                info!(xx = param, "ChannelVolume cannot be more than 0x40, clipping");
                 0x40.cast()
             } else {
                 param.cast()
@@ -412,7 +409,7 @@ pub fn parse_effect(effect: u8, param: u8, log: Option<&mut Vec<String>>) -> Opt
             (0x0, p) => Some(PanningSlide::Right(p.cast())),
             (p, 0xF) => Some(PanningSlide::FineLeft({
                 if p == 0xF {
-                    log("PanningSlide::FineLeft can only be 0xE, clipping.".into());
+                    info!("PanningSlide::FineLeft cannot be more than 0xE, clipping");
                     0xE.cast()
                 } else {
                     p.cast()
@@ -423,11 +420,11 @@ pub fn parse_effect(effect: u8, param: u8, log: Option<&mut Vec<String>>) -> Opt
 
             // Invalid values are handled the same way as with `VolumeSlide`.
             _ => {
-                log(format!(
-                    "PanningSlide parameters require exactly one nibble to be either `0x0` or `0xF`, \
-                    value parameters x={:#X}, y={:#X} don't satisfy this requirement, skipping",
+                info!(
                     x, y,
-                ));
+                    "PanningSlide parameters require exactly one nibble to be either `0x0` or `0xF`, \
+                    value parameters don't satisfy this requirement, skipping",
+                );
                 return None;
             },
         }),
@@ -452,7 +449,7 @@ pub fn parse_effect(effect: u8, param: u8, log: Option<&mut Vec<String>>) -> Opt
                         0x3 => Waveform::Random,
                         _ => {
                             // Parsing any value higher than `0x3` as `Random` too.
-                            log(format!("Waveform can only be in range 0x0..=0x3, found {:#X}, parsing as 0x3 (Waveform::Random)", y));
+                            info!(y, "Waveform can only be in range 0x0..=0x3, parsing as 0x3 (Waveform::Random)");
                             Waveform::Random
                         },
                     };
@@ -479,7 +476,7 @@ pub fn parse_effect(effect: u8, param: u8, log: Option<&mut Vec<String>>) -> Opt
                     0xB => Special::SetPitchEnvelope(false),
                     0xC => Special::SetPitchEnvelope(true),
                     _ => {
-                        log(format!("command `S7y` parameter y={:#x} is out of range 0x0..=0xC, skipping", y));
+                        info!(y, "command `S7y` parameter is out of range 0x0..=0xC, skipping");
                         return None;
                     },
                 },
@@ -488,7 +485,7 @@ pub fn parse_effect(effect: u8, param: u8, log: Option<&mut Vec<String>>) -> Opt
                     0x0 => Special::SetSurround(false),
                     0x1 => Special::SetSurround(true),
                     0x2..=0x7 => {
-                        log(format!("command `S9y` parameter y={:#x} is out of range 0x0..=0x1 and 0x8..=0xF, skipping", y));
+                        info!(y, "command `S9y` parameter is out of range 0x0..=0x1,0x8..=0xF, skipping");
                         return None;
                     },
                     0x8 => Special::SetReverb(false),
@@ -507,14 +504,14 @@ pub fn parse_effect(effect: u8, param: u8, log: Option<&mut Vec<String>>) -> Opt
                 0xC => Special::NoteCut(y.cast()),
                 0xD => Special::NoteDelay(y.cast()),
                 0xE => Special::PatternRowDelay(y.cast()),
-                0xF => Special::SetMIDIParam(y.cast()),
+                0xF => Special::SetMidiParam(y.cast()),
                 _ => unreachable!(),
             })
         }),
         'T' => EffectCmd::Tempo(match param {
             0x00 => None,
             0x10 => {
-                log("increasing tempo by 0 has no effect, skipping".into());
+                info!("increasing tempo by 0 has no effect, skipping");
                 return None;
             },
             0x01 ..= 0x0F => Some(Tempo::SlideDown(y.cast())),
@@ -524,7 +521,7 @@ pub fn parse_effect(effect: u8, param: u8, log: Option<&mut Vec<String>>) -> Opt
         'U' => EffectCmd::FineVibrato((x > 0).then(|| x.cast()), (y > 0).then(|| y.cast())),
         'V' => EffectCmd::SetGlobalVolume({
             if param > 0x80 {
-                log(format!("GlobalVolume cannot be larger than 0x80, found {:#02X}, clipping value", param));
+                info!(xx = param, "GlobalVolume cannot be more than 0x80, clipping");
                 0x80.cast()
             } else {
                 param.cast()
@@ -533,9 +530,9 @@ pub fn parse_effect(effect: u8, param: u8, log: Option<&mut Vec<String>>) -> Opt
         // 'W' is handled together with 'D' above.
         'X' => EffectCmd::SetPanningPosition(param),
         'Y' => EffectCmd::Panbrello((x > 0).then(|| x.cast()), (y > 0).then(|| y.cast())),
-        'Z' => EffectCmd::MIDI(param),
+        'Z' => EffectCmd::Midi(param),
         _ => {
-            log(format!("invalid effect {:#x} out of range 0x0..=0x1A, skipping", effect));
+            info!(code = effect, "invalid effect, code out of range 0x0..=0x1A, skipping");
             return None;
         },
     })
@@ -658,7 +655,7 @@ mod test {
             EffectCmd::Special(Some(Special::SetLoopbackPoint)),
             EffectCmd::Special(Some(Special::LoopbackTimes(0x3.cast()))),
             EffectCmd::Special(Some(Special::PatternRowDelay(0xD.cast()))),
-            EffectCmd::Special(Some(Special::SetMIDIParam(0xF.cast()))),
+            EffectCmd::Special(Some(Special::SetMidiParam(0xF.cast()))),
 
             // T
             EffectCmd::Tempo(Some(Tempo::SlideDown(1.cast()))),
@@ -687,10 +684,10 @@ mod test {
             EffectCmd::Panbrello(Some(1.cast()), Some(3.cast())),
 
             // Z
-            EffectCmd::MIDI(0xF1),
+            EffectCmd::Midi(0xF1),
         ];
 
-        let module = ensure_parse(module, DATA);
+        let module = ensure_parse(module_file, DATA);
 
         let effects = module.patterns
             .into_iter().nth(0).unwrap()
