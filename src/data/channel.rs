@@ -13,7 +13,7 @@ pub struct Channel(RangedU8<0, 63>);
 impl Channel {
     /// Create a channel identifier with the given number
     ///
-    /// Accepted range is 1..=64
+    /// Accepted range is 1..=64, this function panics for values out of the range.
     pub fn new(number: u8) -> Channel {
         assert!((1..=64).contains(&number), "channel number is out of range");
         Channel::from_u8_index(number - 1)

@@ -108,7 +108,7 @@ where
 
                     assert!(
                         channel_var != 0,
-                        "this is a bug: 0 marks end of row and should be handled by a different parser",
+                        "BUG: 0 marks end of row and should be handled by a different parser",
                     );
 
                     let channel_mask = ChannelMask::from_bits_truncate(channel_var);
@@ -281,14 +281,10 @@ fn effect<'i, E: ParseError<&'i [u8]> + ContextError<&'i [u8]>>(
 /// Parse structured effect from raw effect number and parameter
 ///
 /// This function performs all the canonicalization and checking as described in the documentation
-/// for [`EffectCmd`] and the other enums it can contain. If the log parameter is some it'll log
-/// a user-readable description of the actions performed.
+/// for [`EffectCmd`] and the other enums it can contain.
 ///
 /// This function can be used when parsing user input in a tracker based on this library to ensure
 /// consistency when reading files from disk, when using the UI and when saving to disk.
-///
-/// Feel free to report issues with any inconsistency between the results of this method and the
-/// documentation.
 pub fn parse_effect(effect: u8, param: u8) -> Option<EffectCmd> {
     // Extract param nibbles.
     let (x, y) = (param >> 4, param & 0x0F);
