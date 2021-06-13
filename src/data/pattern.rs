@@ -893,7 +893,7 @@ impl From<Note> for u8 {
 fn note_string(Note(idx): Note, buf: &mut [u8; 3]) -> &str {
     // This is just a sanity check for the macros. This invariant should be already enforced by the
     // Note type itself at the module boundary.
-    assert!(idx < 120, "Note inner value is out of range of 0..=119");
+    assert!(idx < 120, "BUG: Note inner value is out of range of 0..=119");
 
     const NAMES: [&[u8; 2]; 12] = [b"C-", b"C#", b"D-", b"D#", b"E-", b"F-", b"F#", b"G-", b"G#", b"A-", b"A#", b"B-"];
     let name = NAMES[usize::from(idx % 12)];

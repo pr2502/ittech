@@ -168,7 +168,7 @@ where
             value
         } else {
             let value = or_else(value);
-            debug_assert!(range.contains(&value));
+            assert!(range.contains(&value), "BUG: fallback value is also out of range");
             value
         }
     }
@@ -188,7 +188,7 @@ where
         info!("tempo must be at least 31, using default of 120");
         120
     });
-    let sep = ranged(sep, 31..=255, |_| {
+    let sep = ranged(sep, 0..=128, |_| {
         info!("pan_separation cannot be more than 128, clipping");
         128
     });
@@ -433,6 +433,7 @@ where
     let (input, vit) = le_u8(input)?;
 
     let loop_ = if flags.contains(SampleFlags::LOOP) {
+        // TODO canonicalize/skip invalid values
         assert!(loopbegin < loopend);
         assert!(loopend <= length);
         Some(SampleLoop {
@@ -445,6 +446,7 @@ where
     };
 
     let sustain_loop = if flags.contains(SampleFlags::SUSTAIN) {
+        // TODO canonicalize/skip invalid values
         assert!(susloopbegin < susloopend);
         assert!(susloopend <= length);
         Some(SampleLoop {
@@ -488,7 +490,7 @@ where
     let data = if !flags.contains(SampleFlags::DATA_PRESENT) {
         None
     } else {
-        // TODO add support for more sample formats
+        // TODO add support for more sample formats, do not panic
 
         assert!(flags.contains(SampleFlags::DATA_SIGNED), "only signed samples are supported");
         assert!(!flags.contains(SampleFlags::STEREO), "only mono samples supported");
