@@ -96,7 +96,7 @@ fn render(module: Module) -> Result<Vec<f32>> {
                         let instrument = &module[instrument];
                         if let Some(sample) = instrument.sample_map[note] {
                             let sample = &module[sample];
-                            generators[chan.as_usize()] = Some(Box::new(resample(sample, note.into())));
+                            generators[chan.as_usize()] = Some(resample(sample, note.into()));
                         }
                     }
                     (Some(NoteCmd::Cut | NoteCmd::Fade), _) => {
