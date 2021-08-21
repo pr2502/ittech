@@ -6,9 +6,9 @@ edition = "2018"
 
 description = "Impulse Tracker file parser and writer"
 readme = "README.md"
-homepage = "https://github.com/ametisf/ittech"
+homepage = "https://github.com/pr2502/ittech"
 documentation = "https://docs.rs/ittech"
-repository = "https://github.com/ametisf/ittech"
+repository = "https://github.com/pr2502/ittech"
 license = "GPL-3.0-or-later"
 
 [dependencies]

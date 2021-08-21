@@ -10,8 +10,8 @@ example itself implements no effects so most tracks will probably sound really
 bad.  The [dump example] is useful for demonstrating the current parsing
 capabilities of the library.
 
-[render example]: https://github.com/ametisf/ittech/blob/main/examples/render.rs
-[dump example]: https://github.com/ametisf/ittech/blob/main/examples/dump.rs
+[render example]: https://github.com/pr2502/ittech/blob/main/examples/render.rs
+[dump example]: https://github.com/pr2502/ittech/blob/main/examples/dump.rs
 
 You can run the examples using cargo:
 
