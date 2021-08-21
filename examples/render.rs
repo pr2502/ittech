@@ -1,5 +1,3 @@
-#![feature(or_patterns)]
-
 use anyhow::{Context, Result};
 use ittech::error::{convert_error, VerboseError};
 use ittech::parser;
