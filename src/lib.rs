@@ -1,8 +1,3 @@
-#![feature(const_mut_refs)]
-#![feature(const_panic)]
-#![feature(const_str_from_utf8_unchecked)]
-#![feature(stmt_expr_attributes)]
-
 // We use all these clippy lints to help avoid silent data loss in the parser/serializer,
 // none of these warnings should make it into a release.
 #![warn(clippy::as_conversions)]
