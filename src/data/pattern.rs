@@ -147,7 +147,7 @@ pub enum VolumeCmd {
     /// ```
     ///
     /// `None` uses the last value.
-    // TODO is memory is shared with `Gxx`?
+    // TODO is memory shared with `Gxx`?
     TonePortamento(Option<RangedU8<1, 9>>),
 
     /// `h0x` Vibrato depth
@@ -964,6 +964,7 @@ define_notes! {
 
 
 impl VolumeCmd {
+    /// See [`EffectCategory`].
     pub fn category(&self) -> EffectCategory {
         match self {
             VolumeCmd::FineVolumeUp(_) |
@@ -986,6 +987,7 @@ impl VolumeCmd {
 }
 
 impl EffectCmd {
+    /// See [`EffectCategory`].
     pub fn category(&self) -> EffectCategory {
         match self {
             EffectCmd::SetSpeed(_) |
