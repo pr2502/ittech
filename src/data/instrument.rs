@@ -88,16 +88,27 @@ pub struct Instrument {
 }
 
 bitflags! {
-    /// Move boolean flags out of values.
+    /// Instrument flags
     ///
-    /// Make data validation clearer by using range-restricted types.
+    /// In the IT file these are suffed in some of the bits of the values themselves, we move the
+    /// boolean flags out of values and make the data validation clearer by using range-restricted
+    /// types.
     #[derive(Default)]
     pub struct InstrumentFlags: u8 {
+        /// Enable panning
+        ///
+        /// This is normally stored in the high bit of [`Instrument::default_panning`].
         const ENABLE_PANNING = 1 << 0;
 
+        /// Enable filter cutoff
+        ///
+        /// This is normally stored in the high bit of [`Instrument::initial_filter_cutoff`].
         const ENABLE_FILTER_CUTOFF = 1 << 1;
 
-        const ENABLE_FILTER_RESONANCE = 1 << 1;
+        /// Enable filter resonance
+        ///
+        /// This is normally stored in the high bit of [`Instrument::initial_filter_resonance`].
+        const ENABLE_FILTER_RESONANCE = 1 << 2;
     }
 }
 
