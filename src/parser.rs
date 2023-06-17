@@ -11,8 +11,10 @@ use nom::number::complete::{be_i16, le_i16, le_i8, le_u16, le_u32, le_u8};
 use nom::sequence::tuple;
 use nom::{Err, IResult};
 use pattern::pattern;
+use std::cmp::{min, max};
 use std::convert::{TryFrom, TryInto};
-use std::ops::RangeInclusive;
+use std::num::Wrapping;
+use std::ops::{RangeInclusive, Add};
 
 
 macro_rules! info {
@@ -481,6 +483,165 @@ where
     ))
 }
 
+
+
+// used as reference for sample decompression:
+// https://github.com/nicolasgramlich/AndEngineMODPlayerExtension/blob/master/jni/loaders/itsex.c
+// https://github.com/B0ney/xmodits/blob/main/xmodits-lib-old/src/fmt/compression.rs
+
+// This section of code looks the way it looks because an integer with the bits
+// cba98 76543210
+// may be stored like this:
+// 210##### a9876543 ######cb
+// Next time you see Jeffrey Lim, tell him that he should feel very bad
+
+type BitInput<'a> = (&'a [u8], usize);
+
+fn get_bit(mut input: BitInput) -> IResult<BitInput, usize> {
+    let bit = (input.0.first().unwrap() >> input.1) & 1;
+    input.1 += 1;
+    if input.1 == 8 {
+        input.1 = 0;
+        input.0 = &input.0[1..];
+    }
+    Ok((input, bit.into()))
+}
+
+fn get_bits(mut input: BitInput, bits: usize) -> IResult<BitInput, usize> {
+    let mut result: usize = 0;
+    for i in 0..bits {
+        let bit;
+        (input, bit) = get_bit(input)?;
+        result |= bit << i;
+    }
+    Ok((input, result))
+}
+
+fn integrate_with_wrap<T>(state: &mut Wrapping<T>, x: T) -> Option<T> 
+where 
+    T: Copy, 
+    Wrapping<T>: Add<Output = Wrapping<T>>
+{
+    *state = *state + Wrapping(x);
+    Some((*state).0)
+}
+
+trait SampleValue {
+    fn normalize(&self) -> f32;
+    fn bits() -> usize;
+    fn bits_log2() -> usize;
+    fn as_signed_int(unsigned: usize) -> Self;
+}
+
+impl SampleValue for i8 {
+    fn normalize(&self) -> f32 {
+        *self as f32 / -f32::from(Self::MIN)
+    }
+    fn bits() -> usize {
+        8
+    }
+    fn bits_log2() -> usize {
+        3
+    }
+    fn as_signed_int(unsigned: usize) -> Self {
+        unsigned as Self
+    }
+}
+
+impl SampleValue for i16 {
+    fn normalize(&self) -> f32 {
+        *self as f32 / -f32::from(Self::MIN)
+    }
+    fn bits() -> usize {
+        16
+    }
+    fn bits_log2() -> usize {
+        4
+    }
+    fn as_signed_int(unsigned: usize) -> Self {
+        unsigned as Self
+    }
+}
+
+fn decompress_block<'i, T, E>(input: &'i [u8], samples: usize, delta: bool) -> Result<Vec<f32>, Err<E>> 
+where
+    E: ParseError<&'i [u8]> + ContextError<&'i [u8]>,
+    T: SampleValue + std::ops::Shr<i32, Output = T> + Copy + Default, 
+    Wrapping<T>: Add<Output = Wrapping<T>>
+{
+    let mut decompressed_block: Vec<T> = Vec::with_capacity(samples);
+    let mut input: BitInput = (input, 0);
+    let mut bits_per_sample:usize = T::bits() + 1;
+    while decompressed_block.len() < samples {
+        let sample_value: usize;
+        (input, sample_value) = get_bits(input, bits_per_sample).unwrap();
+        if let Some(new_bits_per_sample) = match bits_per_sample {
+            1..=6 => {
+                // only msb set?
+                (sample_value == (1 << (bits_per_sample - 1))).then(|| {
+                    let mut encoded_new_bps;
+                    (input, encoded_new_bps) = get_bits(input, T::bits_log2()).unwrap();
+                    encoded_new_bps += 1;
+                    if encoded_new_bps < bits_per_sample {encoded_new_bps} else {encoded_new_bps + 1}
+                })
+            },
+            7.. if bits_per_sample <= T::bits() => {
+                // the values around 10000... are reserved for bps changes
+                let new_bps_range_size = T::bits();
+                let new_bps_range_start: usize = (1 << (bits_per_sample - 1)) - (new_bps_range_size / 2);
+                (new_bps_range_start..new_bps_range_start + new_bps_range_size)
+                    .contains(&sample_value).then(|| {
+                        let encoded_new_bps = (sample_value - new_bps_range_start) + 1;
+                        if encoded_new_bps < bits_per_sample {encoded_new_bps} else {encoded_new_bps + 1}
+                    })
+            }
+            _ if bits_per_sample == (T::bits() + 1) => {
+                // msb set?
+                ((sample_value >> T::bits()) == 1).then(||{
+                    (sample_value & 0xff) + 1
+                })
+            }
+            _ => unreachable!()
+        } {
+            assert!((1..=(T::bits() + 1)).contains(&new_bits_per_sample), "broken sample, invalid bits/sample value: {}, old value: {}", new_bits_per_sample, bits_per_sample);
+            bits_per_sample = new_bits_per_sample;
+            continue;
+        }
+        // shifting is necessary because the msb is the sign bit, not bit 7/15
+        let shift = max(T::bits() as i32 - bits_per_sample as i32, 0);
+        let signed_sample_value = T::as_signed_int(sample_value << shift) >> shift;
+        decompressed_block.push(signed_sample_value);
+    }
+
+    // integrate twice if the delta flag is set, otherwise once
+    Ok(
+        decompressed_block.into_iter()
+            .scan(Wrapping(T::default()), integrate_with_wrap::<T>)
+            .scan(Wrapping(T::default()), |state, x| if delta {integrate_with_wrap(state, x)} else {Some(x)})
+            .map(|x| x.normalize())
+            .collect()
+    )
+}
+
+fn decompress<'i, T, E>(mut input: &'i [u8], length: usize, delta: bool) -> Result<Vec<f32>, Err<E>> 
+where
+    E: ParseError<&'i [u8]> + ContextError<&'i [u8]>, 
+    T: SampleValue + std::ops::Shr<i32, Output = T> + Default + Copy,
+    Wrapping<T>: Add<Output = Wrapping<T>>
+{
+    let mut decompressed_sample: Vec<f32> = Vec::with_capacity(length);
+    while decompressed_sample.len() < length {
+        let block_data_length;
+        (input, block_data_length) = le_u16(input)?;
+        let block_data: &[u8];
+        (input, block_data) = take(block_data_length)(input)?;
+        const BLOCK_SAMPLES_MAX_BYTE_LENGTH: usize = 0x8000;
+        let block_samples = min(length - decompressed_sample.len(), BLOCK_SAMPLES_MAX_BYTE_LENGTH / (T::bits() / 8));
+        decompressed_sample.append(&mut decompress_block::<T, _>(block_data, block_samples, delta)?)
+    }
+    Ok(decompressed_sample)
+}
+
 fn sample_data<'i, E>(header: SampleHeader, input: &'i [u8]) -> Result<Sample, Err<E>>
 where
     E: ParseError<&'i [u8]> + ContextError<&'i [u8]>,
@@ -491,28 +652,30 @@ where
         None
     } else {
         // TODO add support for more sample formats, do not panic
-
         assert!(flags.contains(SampleFlags::DATA_SIGNED), "only signed samples are supported");
         assert!(!flags.contains(SampleFlags::STEREO), "only mono samples supported");
 
-        assert!(!flags.contains(SampleFlags::COMPRESSED), "sample compression is not supported");
         assert!(!flags.contains(SampleFlags::OPL_INSTRUMENT), "OPL instrument is not supported");
         assert!(!flags.contains(SampleFlags::EXTERNAL_SAMPLE), "external samples are not supported");
         assert!(!flags.contains(SampleFlags::ADPCM_SAMPLE), "MODPlugin :(");
-        assert!(!flags.contains(SampleFlags::DELTA), "delta samples are not supported");
+        assert!(!(flags.contains(SampleFlags::DELTA) && !flags.contains(SampleFlags::COMPRESSED)), "delta samples without compression are not supported");
         assert!(!flags.contains(SampleFlags::PTM8_TO_16), "PTM loader is not supported");
 
         let offset = header.data_offset.cast();
         let length = header.data_length.cast();
         let input = &input[offset..];
 
-        let (_, data) = match (
+        let data = match (
             flags.contains(SampleFlags::DATA_16BIT),
             flags.contains(SampleFlags::DATA_BIG_ENDIAN),
+            flags.contains(SampleFlags::COMPRESSED)
         ) {
-            (true, true) => count(map(be_i16, |s| f32::from(s) / f32::from(i16::MAX)), length)(input)?,
-            (true, false) => count(map(le_i16, |s| f32::from(s) / f32::from(i16::MAX)), length)(input)?,
-            (false, _) => count(map(le_i8, |s| f32::from(s) / f32::from(i8::MAX)), length)(input)?,
+            (true, true, false) => count(map(be_i16, |s| s.normalize()), length)(input)?.1,
+            (true, false, false) => count(map(le_i16, |s| s.normalize()), length)(input)?.1,
+            (false, _, false) => count(map(le_i8, |s| s.normalize()), length)(input)?.1,
+            (true, false, true) => decompress::<i16, _>(input, length, flags.contains(SampleFlags::DELTA))?,
+            (false, _, true) => decompress::<i8, _>(input, length, flags.contains(SampleFlags::DELTA))?,
+            (true, true, true) => todo!("compressed 16 bit big endian samples not supported")
         };
 
         Some(data)
