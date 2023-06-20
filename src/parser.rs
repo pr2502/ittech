@@ -697,3 +697,38 @@ where
         data,
     })
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::error::{VerboseError, convert_error};
+    use nom::Err;
+    use pretty_assertions::assert_eq;
+
+    fn ensure_parse<'i, O>(
+        parser: impl FnOnce(&'i [u8]) -> Result<O, Err<VerboseError<&'i [u8]>>>,
+        input: &'i [u8],
+    ) -> O {
+        match parser(input) {
+            Ok(res) => res,
+            Err(Err::Error(e)) | Err(Err::Failure(e)) => {
+                panic!("parser failed\n\n{}", convert_error(input, e));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn compressed_samples(){
+        const COMPRESSED_INST_DATA: &[u8] = include_bytes!("../tests/compression/compressed.iti");
+        const SAMPLE_8_DATA: &[u8] = include_bytes!("../tests/compression/sample_8.raw");
+        const SAMPLE_16_DATA: &[u8] = include_bytes!("../tests/compression/sample_16.raw");
+
+        let instrument = ensure_parse(instrument_file, COMPRESSED_INST_DATA);
+        let mut samples = instrument.samples.into_iter();
+        assert_eq!(samples.next().unwrap().data.unwrap(), SAMPLE_8_DATA.iter().map(|x| (*x as i8).normalize()).collect::<Vec<_>>());
+        assert_eq!(samples.next().unwrap().data.unwrap(), SAMPLE_16_DATA.chunks_exact(2).map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]).normalize()).collect::<Vec<_>>());
+
+        // todo: checking if the samples are in fact compressed wouldn't hurt :)
+    }
+}
