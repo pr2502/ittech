@@ -731,4 +731,13 @@ mod test {
 
         // todo: checking if the samples are in fact compressed wouldn't hurt :)
     }
+
+    #[test]
+    fn song_message(){
+        const MODULE_DATA: &[u8] = include_bytes!("../tests/song_message.it");
+        const MODULE_SONG_MESSAGE: &str = "lorem ipsum";
+
+        let module = ensure_parse(module_file, MODULE_DATA);
+        assert_eq!(module.message, MODULE_SONG_MESSAGE.to_string());
+    }
 }
