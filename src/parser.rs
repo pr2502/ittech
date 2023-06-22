@@ -75,8 +75,10 @@ where
         if offset == 0 || offset >= input.len() {
             String::new()
         } else {
-            let (_, bytes) = take(header.message_length.cast::<usize>())(input)?;
-            String::from_utf8_lossy(bytes)
+            let (_, bytes) = take(header.message_length.cast::<usize>())(&input[offset..])?;
+            //according to ITTECH.TXT, a \0 is always the end of a message
+            let bytes_before_terminator = bytes.split(|&x| x == b'\0').next().unwrap();
+            String::from_utf8_lossy(bytes_before_terminator)
                 .to_string()
         }
     };
