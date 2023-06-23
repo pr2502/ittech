@@ -11,7 +11,7 @@ use nom::number::complete::{be_i16, le_i16, le_i8, le_u16, le_u32, le_u8};
 use nom::sequence::tuple;
 use nom::{Err, IResult};
 use pattern::pattern;
-use std::cmp::{min, max};
+use std::cmp::min;
 use std::convert::{TryFrom, TryInto};
 use std::num::Wrapping;
 use std::ops::{RangeInclusive, Add};
@@ -525,7 +525,7 @@ where
     Wrapping<T>: Add<Output = Wrapping<T>>
 {
     *state = *state + Wrapping(x);
-    Some((*state).0)
+    Some(state.0)
 }
 
 trait SampleValue {
@@ -537,7 +537,7 @@ trait SampleValue {
 
 impl SampleValue for i8 {
     fn normalize(&self) -> f32 {
-        *self as f32 / -f32::from(Self::MIN)
+        f32::from(*self) / -f32::from(Self::MIN)
     }
     fn bits() -> usize {
         8
@@ -545,6 +545,7 @@ impl SampleValue for i8 {
     fn bits_log2() -> usize {
         3
     }
+    #[allow(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     fn as_signed_int(unsigned: usize) -> Self {
         unsigned as Self
     }
@@ -552,7 +553,7 @@ impl SampleValue for i8 {
 
 impl SampleValue for i16 {
     fn normalize(&self) -> f32 {
-        *self as f32 / -f32::from(Self::MIN)
+        f32::from(*self) / -f32::from(Self::MIN)
     }
     fn bits() -> usize {
         16
@@ -560,6 +561,7 @@ impl SampleValue for i16 {
     fn bits_log2() -> usize {
         4
     }
+    #[allow(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     fn as_signed_int(unsigned: usize) -> Self {
         unsigned as Self
     }
@@ -568,7 +570,7 @@ impl SampleValue for i16 {
 fn decompress_block<'i, T, E>(input: &'i [u8], samples: usize, delta: bool) -> Result<Vec<f32>, Err<E>> 
 where
     E: ParseError<&'i [u8]> + ContextError<&'i [u8]>,
-    T: SampleValue + std::ops::Shr<i32, Output = T> + Copy + Default, 
+    T: SampleValue + std::ops::Shr<usize, Output = T> + Copy + Default, 
     Wrapping<T>: Add<Output = Wrapping<T>>
 {
     let mut decompressed_block: Vec<T> = Vec::with_capacity(samples);
@@ -599,9 +601,9 @@ where
             }
             _ if bits_per_sample == (T::bits() + 1) => {
                 // msb set?
-                ((sample_value >> T::bits()) == 1).then(||{
+                ((sample_value >> T::bits()) == 1).then_some(
                     (sample_value & 0xff) + 1
-                })
+                )
             }
             _ => unreachable!()
         } {
@@ -610,7 +612,7 @@ where
             continue;
         }
         // shifting is necessary because the msb is the sign bit, not bit 7/15
-        let shift = max(T::bits() as i32 - bits_per_sample as i32, 0);
+        let shift = if T::bits() > bits_per_sample {T::bits() - bits_per_sample} else {0};
         let signed_sample_value = T::as_signed_int(sample_value << shift) >> shift;
         decompressed_block.push(signed_sample_value);
     }
@@ -628,7 +630,7 @@ where
 fn decompress<'i, T, E>(mut input: &'i [u8], length: usize, delta: bool) -> Result<Vec<f32>, Err<E>> 
 where
     E: ParseError<&'i [u8]> + ContextError<&'i [u8]>, 
-    T: SampleValue + std::ops::Shr<i32, Output = T> + Default + Copy,
+    T: SampleValue + std::ops::Shr<usize, Output = T> + Default + Copy,
     Wrapping<T>: Add<Output = Wrapping<T>>
 {
     let mut decompressed_sample: Vec<f32> = Vec::with_capacity(length);
@@ -660,7 +662,7 @@ where
         assert!(!flags.contains(SampleFlags::OPL_INSTRUMENT), "OPL instrument is not supported");
         assert!(!flags.contains(SampleFlags::EXTERNAL_SAMPLE), "external samples are not supported");
         assert!(!flags.contains(SampleFlags::ADPCM_SAMPLE), "MODPlugin :(");
-        assert!(!(flags.contains(SampleFlags::DELTA) && !flags.contains(SampleFlags::COMPRESSED)), "delta samples without compression are not supported");
+        assert!(!flags.contains(SampleFlags::DELTA) || flags.contains(SampleFlags::COMPRESSED), "delta samples without compression are not supported");
         assert!(!flags.contains(SampleFlags::PTM8_TO_16), "PTM loader is not supported");
 
         let offset = header.data_offset.cast();
