@@ -43,7 +43,8 @@ pub struct Sample {
     /// Auto-Vibrato Type
     pub vibrato_type: u8,
 
-    /// Sample samples converted to a normalized `f32` representation (values from -1.0 to 1.0)
+    /// Sample samples converted to a normalized `f32` representation (values from -1.0 (inclusive)
+    /// to 1.0 (exclusive))
     pub data: Option<Vec<f32>>,
 }
 
