@@ -495,7 +495,6 @@ where
 // cba98 76543210
 // may be stored like this:
 // 210##### a9876543 ######cb
-// Next time you see Jeffrey Lim, tell him that he should feel very bad
 
 type BitInput<'a> = (&'a [u8], usize);
 
