@@ -2,7 +2,7 @@ use super::*;
 use crate::error::OutOfRangeError;
 use std::convert::TryFrom;
 use std::fmt::{self, Debug, Display};
-use std::str;
+use std::str::{self, FromStr};
 
 
 /// Pattern
@@ -60,7 +60,7 @@ pub enum NoteCmd {
 ///
 /// Ranges from C-0 to B-9, only exact pitches can be represented.
 #[derive(Clone, Copy)]
-pub struct Note(u8);
+pub struct Note(RangedU8<0, 119>);
 
 /// Volume column commands
 ///
@@ -875,27 +875,42 @@ impl TryFrom<u8> for Note {
     type Error = OutOfRangeError<0, 119>;
 
     fn try_from(raw: u8) -> Result<Self, Self::Error> {
-        if (0..=119).contains(&raw) {
-            Ok(Note(raw))
-        } else {
-            Err(OutOfRangeError(raw))
-        }
+        RangedU8::try_from(raw).map(Note)
     }
 }
 
 impl From<Note> for u8 {
     fn from(note: Note) -> u8 {
-        note.0
+        note.0.as_u8()
+    }
+}
+
+/// Note names
+const NAMES: [&[u8; 2]; 12] = [b"C-", b"C#", b"D-", b"D#", b"E-", b"F-", b"F#", b"G-", b"G#", b"A-", b"A#", b"B-"];
+
+#[derive(Debug, Clone)]
+pub struct ParseNoteError(());
+
+impl FromStr for Note {
+    type Err = ParseNoteError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (name, octave) = match s.as_bytes() {
+            [a] => ([*a, b'-'], 0),
+            [a, b] => ([*a, *b], 0),
+            [a, b, c, ..] => ([*a, *b], c.wrapping_sub(b'0')),
+            _ => return Err(ParseNoteError(())),
+        };
+        let name = NAMES.iter().position(|&n| n == &name).ok_or(ParseNoteError(()))?;
+        if !(0..=9).contains(&octave) { return Err(ParseNoteError(())); };
+        Ok(Note(RangedU8::new(octave * 12 + u8::try_from(name).unwrap())))
     }
 }
 
 /// Creates a formatted string for the note in the given buffer
-fn note_string(Note(idx): Note, buf: &mut [u8; 3]) -> &str {
-    // This is just a sanity check for the macros. This invariant should be already enforced by the
-    // Note type itself at the module boundary.
-    assert!(idx < 120, "BUG: Note inner value is out of range of 0..=119");
+fn note_string(note: Note, buf: &mut [u8; 3]) -> &str {
+    let idx = note.0.as_u8();
 
-    const NAMES: [&[u8; 2]; 12] = [b"C-", b"C#", b"D-", b"D#", b"E-", b"F-", b"F#", b"G-", b"G#", b"A-", b"A#", b"B-"];
     let name = NAMES[usize::from(idx % 12)];
     let octave = b'0' + (idx / 12);
 
@@ -903,8 +918,10 @@ fn note_string(Note(idx): Note, buf: &mut [u8; 3]) -> &str {
     buf[1] = name[1];
     buf[2] = octave;
 
-    // SAFETY This function itself fills the buffer with valid UTF-8 (ASCII).
-    unsafe { str::from_utf8_unchecked(&*buf) }
+    match str::from_utf8(&*buf) {
+        Ok(string) => string,
+        Err(err) => unreachable!("BUG: Note formatting produced invalid UTF-8: {err:?}"),
+    }
 }
 
 impl Debug for Note {
@@ -924,8 +941,8 @@ impl Display for Note {
 impl Note {
     /// Convert note into its frequency in A=440Hz tuning
     pub fn freq(self) -> f32 {
-        let (Note(idx), Note(base)) = (self, Note::A_4);
-        let exp = (f32::from(idx) - f32::from(base)) / 12.0f32;
+        let (idx, base) = (self, Note::A_4);
+        let exp = (f32::from(u8::from(idx)) - f32::from(u8::from(base))) / 12.0f32;
         440.0f32 * 2.0f32.powf(exp)
     }
 }
@@ -944,7 +961,7 @@ macro_rules! define_notes {
     ( @($_: expr) ) => {};
     // Recursive-case, pops one note from the list and adds one to the accumulator expression.
     ( @($acc: expr) $note: ident, $( $notes: ident ),* $(,)? ) => {
-        pub const $note: Note = Note($acc);
+        pub const $note: Note = Note(RangedU8::new($acc));
         define_notes!( @($acc + 1) $( $notes, )* );
     };
 }
