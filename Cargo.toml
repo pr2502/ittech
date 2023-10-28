@@ -2,7 +2,7 @@
 name = "ittech"
 version = "0.3.0"
 authors = []
-edition = "2018"
+edition = "2021"
 
 description = "Impulse Tracker file parser and writer"
 readme = "README.md"

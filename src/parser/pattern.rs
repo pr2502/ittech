@@ -437,7 +437,7 @@ pub fn parse_effect(effect: u8, param: u8) -> Option<EffectCmd> {
             Some(match x {
                 0x1 => Special::SetGlissando(y != 0x0),
                 0x2 => Special::SetFinetune(y.cast()),
-                0x3 | 0x4 | 0x5 => {
+                3 ..= 5 => {
                     let waveform = match y {
                         0x0 => Waveform::Sine,
                         0x1 => Waveform::Sawtooth,
@@ -686,7 +686,7 @@ mod test {
         let module = ensure_parse(module_file, DATA);
 
         let effects = module.patterns
-            .into_iter().nth(0).unwrap()
+            .into_iter().next().unwrap()
             .rows.iter()
             .filter_map(|row| row.iter().next())
             .filter_map(|(chan, cmd)| { assert_eq!(chan.as_usize(), 0); cmd.effect })
