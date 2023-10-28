@@ -20,6 +20,15 @@ impl<const LOW: u8, const HIGH: u8> RangedU8<LOW, HIGH> {
     pub fn as_u8(self) -> u8 {
         self.0
     }
+
+    /// # Panics
+    /// Panics if the range `LOW..=HIGH` is empty.
+    /// Panics if `raw` is outside the `LOW..=HIGH` range.
+    pub const fn new(raw: u8) -> Self {
+        assert!(LOW < HIGH);
+        assert!(LOW <= raw && raw <= HIGH);
+        Self(raw)
+    }
 }
 
 impl<const LOW: u8, const HIGH: u8> TryFrom<u8> for RangedU8<LOW, HIGH> {
