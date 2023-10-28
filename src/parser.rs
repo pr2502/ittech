@@ -518,9 +518,9 @@ fn get_bits(mut input: BitInput, bits: usize) -> IResult<BitInput, usize> {
     Ok((input, result))
 }
 
-fn integrate_with_wrap<T>(state: &mut Wrapping<T>, x: T) -> Option<T> 
-where 
-    T: Copy, 
+fn integrate_with_wrap<T>(state: &mut Wrapping<T>, x: T) -> Option<T>
+where
+    T: Copy,
     Wrapping<T>: Add<Output = Wrapping<T>>
 {
     *state = *state + Wrapping(x);
@@ -566,10 +566,10 @@ impl SampleValue for i16 {
     }
 }
 
-fn decompress_block<'i, T, E>(input: &'i [u8], samples: usize, delta: bool) -> Result<Vec<f32>, Err<E>> 
+fn decompress_block<'i, T, E>(input: &'i [u8], samples: usize, delta: bool) -> Result<Vec<f32>, Err<E>>
 where
     E: ParseError<&'i [u8]> + ContextError<&'i [u8]>,
-    T: SampleValue + std::ops::Shr<usize, Output = T> + Copy + Default, 
+    T: SampleValue + std::ops::Shr<usize, Output = T> + Copy + Default,
     Wrapping<T>: Add<Output = Wrapping<T>>
 {
     let mut decompressed_block: Vec<T> = Vec::with_capacity(samples);
@@ -626,9 +626,9 @@ where
     )
 }
 
-fn decompress<'i, T, E>(mut input: &'i [u8], length: usize, delta: bool) -> Result<Vec<f32>, Err<E>> 
+fn decompress<'i, T, E>(mut input: &'i [u8], length: usize, delta: bool) -> Result<Vec<f32>, Err<E>>
 where
-    E: ParseError<&'i [u8]> + ContextError<&'i [u8]>, 
+    E: ParseError<&'i [u8]> + ContextError<&'i [u8]>,
     T: SampleValue + std::ops::Shr<usize, Output = T> + Default + Copy,
     Wrapping<T>: Add<Output = Wrapping<T>>
 {
@@ -708,10 +708,10 @@ mod test {
     use nom::Err;
     use pretty_assertions::assert_eq;
 
-    fn ensure_parse<'i, O>(
-        parser: impl FnOnce(&'i [u8]) -> Result<O, Err<VerboseError<&'i [u8]>>>,
-        input: &'i [u8],
-    ) -> O {
+    fn ensure_parse<'i, P, O>(parser: P, input: &'i [u8]) -> O
+    where P:
+        FnOnce(&'i [u8]) -> Result<O, Err<VerboseError<&'i [u8]>>>,
+    {
         match parser(input) {
             Ok(res) => res,
             Err(Err::Error(e)) | Err(Err::Failure(e)) => {
@@ -722,21 +722,21 @@ mod test {
     }
 
     #[test]
-    fn compressed_samples(){
+    fn compressed_samples() {
         const COMPRESSED_INST_DATA: &[u8] = include_bytes!("../tests/compression/compressed.iti");
         const SAMPLE_8_DATA: &[u8] = include_bytes!("../tests/compression/sample_8.raw");
         const SAMPLE_16_DATA: &[u8] = include_bytes!("../tests/compression/sample_16.raw");
 
         let instrument = ensure_parse(instrument_file, COMPRESSED_INST_DATA);
         let mut samples = instrument.samples.into_iter();
-        assert_eq!(samples.next().unwrap().data.unwrap(), SAMPLE_8_DATA.iter().map(|x| (*x as i8).normalize()).collect::<Vec<_>>());
+        assert_eq!(samples.next().unwrap().data.unwrap(), SAMPLE_8_DATA.iter().map(|x| i8::from_le_bytes([*x]).normalize()).collect::<Vec<_>>());
         assert_eq!(samples.next().unwrap().data.unwrap(), SAMPLE_16_DATA.chunks_exact(2).map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]).normalize()).collect::<Vec<_>>());
 
         // todo: checking if the samples are in fact compressed wouldn't hurt :)
     }
 
     #[test]
-    fn song_message(){
+    fn song_message() {
         const MODULE_DATA: &[u8] = include_bytes!("../tests/song_message.it");
         const MODULE_SONG_MESSAGE: &str = "lorem ipsum";
 

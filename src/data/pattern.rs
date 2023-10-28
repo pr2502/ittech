@@ -807,7 +807,7 @@ pub enum PlayDirection {
 }
 
 /// Effect `Txx` Change tempo
-/// 
+///
 /// OpenMPT documents only the `Set` variant. Schism Tracker sets tempo on the first tick of the
 /// row if it got the `Set` variant, or increases/decreases the tempo on every other tick of the
 /// row by `x` and clipping it to `0x20..=0xFF`.
